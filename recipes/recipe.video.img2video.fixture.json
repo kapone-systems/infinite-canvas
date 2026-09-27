@@ -1,0 +1,29 @@
+{
+  "id": "recipe.video.img2video.fixture",
+  "version": 1,
+  "title": "图生视频（夹具，无厂商报文）",
+  "capability": "video.generate",
+  "profileId": "img2video",
+  "lane": "cloud",
+  "adapterId": "example.video.fixture",
+  "requiresSecret": false,
+  "slots": [
+    { "role": "first_frame", "minCount": 1, "maxCount": 1, "accepts": ["image"], "required": true },
+    { "role": "last_frame", "minCount": 0, "maxCount": 1, "accepts": ["image"], "required": false },
+    { "role": "prompt", "minCount": 0, "maxCount": 1, "accepts": ["text"], "required": false }
+  ],
+  "params": [
+    { "key": "durationSeconds", "label": "时长（秒）", "valueType": "enum", "userFacing": true, "enumValues": ["2", "4", "8"], "default": "4" }
+  ],
+  "cloud": {
+    "constraints": {
+      "upload": "multipart",
+      "firstFrame": "required",
+      "lastFrame": "optional",
+      "referenceImageCount": { "min": 0, "max": 0 },
+      "duration": { "unit": "seconds", "allowed": [2, 4, 8] },
+      "pollIntervalMs": 2000,
+      "pollTimeoutMs": 600000
+    }
+  }
+}

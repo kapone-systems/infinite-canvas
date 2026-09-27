@@ -1,0 +1,50 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+*.tsbuildinfo
+
+# 环境变量（密钥不进仓库）
+.env
+.env.*
+!.env.example
+
+# 本机应用数据（%LOCALAPPDATA%\CanvasApp）
+# 会话令牌、任务库、单实例锁、日志均不进工程
+CanvasApp/
+**/CanvasApp/
+session.token
+execution.sqlite
+
+# 工具缓存
+.vite/
+*.log
+npm-debug.log*
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 本机演示临时目录
+.tmp-canvas-data/
+.tmp-canvas-projects/
+.tmp-canvas-review/
+.tmp-*/
+.tmp-phase*/
+tmp-phase*/
+
+
+# 不是产品模块
+eval/
+
+# 安装包中间文件和成品（成品放到 GitHub Release）
+apps/desktop/vendor/
+apps/desktop/stage/
+apps/desktop/release/
+
+# 编辑器本地状态
+.zcode/
+
+

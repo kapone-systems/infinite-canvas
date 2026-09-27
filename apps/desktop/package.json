@@ -1,0 +1,20 @@
+{
+  "name": "@canvas/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "本机无限画布桌面窗口",
+  "type": "module",
+  "main": "dist/main.js",
+  "author": "kapone-systems",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "stage": "node scripts/stage-pack.mjs",
+    "start": "electron dist/main.js",
+    "dist": "npm run build && node scripts/stage-pack.mjs && electron-builder --win nsis",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "electron": "28.3.3",
+    "electron-builder": "^25.1.8"
+  }
+}

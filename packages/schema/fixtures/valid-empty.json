@@ -1,0 +1,16 @@
+{
+  "format": "canvas-project",
+  "schemaVersion": 1,
+  "projectId": "proj-empty-fixture",
+  "name": "空工程",
+  "mediaHashAlgorithm": "sha256",
+  "contentRevision": 0,
+  "savedContentRevision": 0,
+  "nextSerial": 1,
+  "createdAt": "2026-09-24T00:00:00.000Z",
+  "updatedAt": "2026-09-24T00:00:00.000Z",
+  "viewport": null,
+  "nodes": {},
+  "edges": {},
+  "groups": {}
+}

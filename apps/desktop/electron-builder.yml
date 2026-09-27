@@ -1,0 +1,22 @@
+appId: local.canvasapp.desktop
+productName: 无限画布
+npmRebuild: false
+directories:
+  output: release
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - from: stage/node
+    to: node
+  - from: stage/canvas
+    to: canvas
+win:
+  target:
+    - nsis
+  signAndEditExecutable: false
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+artifactName: CanvasApp-Setup-${version}.${ext}

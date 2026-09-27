@@ -1,0 +1,58 @@
+{
+  "id": "recipe.image.reference.fictional",
+  "version": 1,
+  "title": "本地参考图生成（虚构配方）",
+  "capability": "image.generate",
+  "profileId": "reference",
+  "lane": "local",
+  "adapterId": "comfy.api-workflow",
+  "requiresSecret": false,
+  "slots": [
+    { "role": "prompt", "minCount": 1, "maxCount": 1, "accepts": ["text"], "required": true },
+    { "role": "reference_image", "minCount": 1, "maxCount": 4, "accepts": ["image"], "required": true },
+    { "role": "style_reference", "minCount": 0, "maxCount": 4, "accepts": ["image"], "required": false },
+    { "role": "character_reference", "minCount": 0, "maxCount": 4, "accepts": ["image"], "required": false }
+  ],
+  "params": [
+    { "key": "seed", "label": "种子", "valueType": "string", "required": true, "userFacing": true, "default": "random" },
+    { "key": "width", "label": "宽度", "valueType": "int", "userFacing": true, "min": 256, "max": 2048, "default": 1024 },
+    { "key": "height", "label": "高度", "valueType": "int", "userFacing": true, "min": 256, "max": 2048, "default": 1024 }
+  ],
+  "comfy": {
+    "format": "comfy.api",
+    "prompt": {
+      "positive": { "class_type": "FictionalPromptEncode", "inputs": { "text": "" } },
+      "ref0": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "ref1": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "ref2": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "ref3": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "style0": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "style1": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "style2": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "style3": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "char0": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "char1": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "char2": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "char3": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "sampler": { "class_type": "FictionalSampler", "inputs": { "seed": 0, "positive": ["positive", 0] } },
+      "save": { "class_type": "FictionalSave", "inputs": { "images": ["sampler", 0] } }
+    },
+    "bindings": [
+      { "from": { "kind": "slot", "role": "prompt" }, "to": { "nodeId": "positive", "input": "text" }, "mode": "concat", "separator": "\n\n" },
+      { "from": { "kind": "slot", "role": "reference_image", "order": 0 }, "to": { "nodeId": "ref0", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "reference_image", "order": 1 }, "to": { "nodeId": "ref1", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "reference_image", "order": 2 }, "to": { "nodeId": "ref2", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "reference_image", "order": 3 }, "to": { "nodeId": "ref3", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "style_reference", "order": 0 }, "to": { "nodeId": "style0", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "style_reference", "order": 1 }, "to": { "nodeId": "style1", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "style_reference", "order": 2 }, "to": { "nodeId": "style2", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "style_reference", "order": 3 }, "to": { "nodeId": "style3", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "character_reference", "order": 0 }, "to": { "nodeId": "char0", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "character_reference", "order": 1 }, "to": { "nodeId": "char1", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "character_reference", "order": 2 }, "to": { "nodeId": "char2", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "slot", "role": "character_reference", "order": 3 }, "to": { "nodeId": "char3", "input": "image" }, "mode": "byOrder" },
+      { "from": { "kind": "param", "key": "seed" }, "to": { "nodeId": "sampler", "input": "seed" }, "mode": "set" }
+    ],
+    "outputNodeIds": ["save"]
+  }
+}

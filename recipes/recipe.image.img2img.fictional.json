@@ -1,0 +1,35 @@
+{
+  "id": "recipe.image.img2img.fictional",
+  "version": 1,
+  "title": "本地图生图（虚构配方）",
+  "capability": "image.generate",
+  "profileId": "img2img",
+  "lane": "local",
+  "adapterId": "comfy.api-workflow",
+  "requiresSecret": false,
+  "slots": [
+    { "role": "prompt", "minCount": 1, "maxCount": 1, "accepts": ["text"], "required": true },
+    { "role": "source_image", "minCount": 1, "maxCount": 1, "accepts": ["image"], "required": true },
+    { "role": "mask", "minCount": 0, "maxCount": 1, "accepts": ["image"], "required": false }
+  ],
+  "params": [
+    { "key": "seed", "label": "种子", "valueType": "string", "required": true, "userFacing": true, "default": "random" },
+    { "key": "width", "label": "宽度", "valueType": "int", "userFacing": true, "min": 256, "max": 2048, "default": 1024 },
+    { "key": "height", "label": "高度", "valueType": "int", "userFacing": true, "min": 256, "max": 2048, "default": 1024 }
+  ],
+  "comfy": {
+    "format": "comfy.api",
+    "prompt": {
+      "load": { "class_type": "FictionalLoadImage", "inputs": { "image": "" } },
+      "positive": { "class_type": "FictionalPromptEncode", "inputs": { "text": "" } },
+      "sampler": { "class_type": "FictionalImg2Img", "inputs": { "image": ["load", 0], "positive": ["positive", 0], "seed": 0 } },
+      "save": { "class_type": "FictionalSave", "inputs": { "images": ["sampler", 0] } }
+    },
+    "bindings": [
+      { "from": { "kind": "slot", "role": "prompt" }, "to": { "nodeId": "positive", "input": "text" }, "mode": "concat", "separator": "\n\n" },
+      { "from": { "kind": "slot", "role": "source_image", "order": 0 }, "to": { "nodeId": "load", "input": "image" }, "mode": "set" },
+      { "from": { "kind": "param", "key": "seed" }, "to": { "nodeId": "sampler", "input": "seed" }, "mode": "set" }
+    ],
+    "outputNodeIds": ["save"]
+  }
+}

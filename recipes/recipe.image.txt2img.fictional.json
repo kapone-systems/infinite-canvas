@@ -1,0 +1,31 @@
+{
+  "id": "recipe.image.txt2img.fictional",
+  "version": 1,
+  "title": "本地文生图（虚构配方）",
+  "capability": "image.generate",
+  "profileId": "txt2img",
+  "lane": "local",
+  "adapterId": "comfy.api-workflow",
+  "requiresSecret": false,
+  "slots": [
+    { "role": "prompt", "minCount": 1, "maxCount": 1, "accepts": ["text"], "required": true }
+  ],
+  "params": [
+    { "key": "seed", "label": "种子", "valueType": "string", "required": true, "userFacing": true, "default": "random" },
+    { "key": "width", "label": "宽度", "valueType": "int", "userFacing": true, "min": 256, "max": 2048, "default": 1024 },
+    { "key": "height", "label": "高度", "valueType": "int", "userFacing": true, "min": 256, "max": 2048, "default": 1024 }
+  ],
+  "comfy": {
+    "format": "comfy.api",
+    "prompt": {
+      "positive": { "class_type": "FictionalPromptEncode", "inputs": { "text": "" } },
+      "sampler": { "class_type": "FictionalSampler", "inputs": { "seed": 0 } },
+      "save": { "class_type": "FictionalSave", "inputs": { "images": ["sampler", 0] } }
+    },
+    "bindings": [
+      { "from": { "kind": "slot", "role": "prompt" }, "to": { "nodeId": "positive", "input": "text" }, "mode": "concat", "separator": "\n\n" },
+      { "from": { "kind": "param", "key": "seed" }, "to": { "nodeId": "sampler", "input": "seed" }, "mode": "set" }
+    ],
+    "outputNodeIds": ["save"]
+  }
+}

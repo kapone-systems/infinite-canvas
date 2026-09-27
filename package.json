@@ -1,0 +1,25 @@
+{
+  "name": "canvas-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "workspaces": [
+    "apps/web",
+    "apps/backend",
+    "packages/schema",
+    "apps/desktop"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w @canvas/web",
+    "dev:backend": "npm run dev -w @canvas/backend",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "node --experimental-strip-types --test \"apps/**/*.test.ts\" \"packages/**/*.test.ts\""
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  }
+}
