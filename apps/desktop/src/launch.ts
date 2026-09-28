@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { homedir as osHomedir } from "node:os";
+import { join, posix, resolve, win32 } from "node:path";
 
 /**
  * 系统 Node。本次是 v24.19.0。
@@ -83,8 +84,10 @@ export function packagedCanvasRoot(resourcesPath: string): string {
   return join(resourcesPath, "canvas");
 }
 
-export function packagedNodeBin(resourcesPath: string): string {
-  return join(resourcesPath, "node", "node.exe");
+/** 默认仍是 Windows 的 node.exe。只有显式传入 linux 才是 node。 */
+export function packagedNodeBin(resourcesPath: string, platform: string = "win32"): string {
+  const fileName = platform === "linux" ? "node" : "node.exe";
+  return join(resourcesPath, "node", fileName);
 }
 
 export function spawnBackend(
@@ -178,16 +181,42 @@ export function shouldAttachExisting(stderr: string): boolean {
   return stderr.includes(LOCK_HELD_LINE) || occupiedPort(stderr) !== null;
 }
 
-export function shellLogDirectory(env: NodeJS.ProcessEnv): string {
+function linuxHome(env: NodeJS.ProcessEnv, homedir: () => string): string | null {
+  const home = env.HOME;
+  if (home !== undefined && home.length > 0) {
+    return posix.isAbsolute(home) ? home : null;
+  }
+  const fromOs = homedir();
+  return posix.isAbsolute(fromOs) ? fromOs : null;
+}
+
+/** 与 apps/backend/src/appData.ts 的 linux 分支同一条规则。失败返回 null，不抛。 */
+function linuxAppDataDir(env: NodeJS.ProcessEnv, homedir: () => string): string | null {
+  const xdg = env.XDG_DATA_HOME;
+  if (xdg !== undefined && xdg.length > 0 && posix.isAbsolute(xdg)) {
+    return posix.join(xdg, "CanvasApp");
+  }
+  const home = linuxHome(env, homedir);
+  if (home === null) {
+    return null;
+  }
+  return posix.join(home, ".local", "share", "CanvasApp");
+}
+
+export function shellLogDirectory(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+  homedir: () => string = osHomedir,
+): string {
   const override = env.CANVAS_SHELL_LOG_DIR;
   if (override !== undefined && override.length > 0) {
     return resolve(override);
   }
-  const local = env.LOCALAPPDATA;
-  if (local === undefined || local.length === 0) {
-    throw new Error("找不到 LOCALAPPDATA，无法写壳日志。");
+  const data = appDataDir(env, platform, homedir);
+  if (data === null) {
+    throw new Error(platform === "linux" ? "找不到家目录，无法写壳日志。" : "找不到 LOCALAPPDATA，无法写壳日志。");
   }
-  return join(local, "CanvasApp", "logs");
+  return platform === "linux" ? posix.join(data, "logs") : join(data, "logs");
 }
 
 /** 丢掉整行 #token=，以及任何含令牌或 test-key-not-real 的行。 */
@@ -233,13 +262,20 @@ export function attachPort(stderr: string, dataDir: string): number {
   return occupiedPort(stderr) ?? listenPortFromAppJson(dataDir) ?? DEFAULT_LISTEN_PORT;
 }
 
-export function appDataDir(env: NodeJS.ProcessEnv): string | null {
+export function appDataDir(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+  homedir: () => string = osHomedir,
+): string | null {
   const fromEnv = env.CANVAS_APP_DATA_DIR;
   if (fromEnv !== undefined && fromEnv.length > 0) {
     return resolve(fromEnv);
   }
+  if (platform === "linux") {
+    return linuxAppDataDir(env, homedir);
+  }
   const local = env.LOCALAPPDATA;
-  if (local === undefined || local.length === 0) {
+  if (local === undefined || local.length === 0 || !win32.isAbsolute(local)) {
     return null;
   }
   return join(local, "CanvasApp");

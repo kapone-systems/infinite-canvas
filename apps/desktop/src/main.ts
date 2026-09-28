@@ -28,7 +28,7 @@ function canvasRoot(): string {
 }
 
 function nodeBinary(): string {
-  return app.isPackaged ? packagedNodeBin(process.resourcesPath) : backendNodeBin;
+  return app.isPackaged ? packagedNodeBin(process.resourcesPath, process.platform) : backendNodeBin;
 }
 
 const debugPort = process.env.CANVAS_SHELL_DEBUG_PORT;

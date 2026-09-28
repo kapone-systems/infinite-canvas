@@ -1,0 +1,87 @@
+name: linux-packages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deb packaging tools
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg
+
+      - name: Build AppImage and deb with official Node 24.19.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_ver="v24.19.0"
+          node_name="node-${node_ver}-linux-x64"
+          archive="${node_name}.tar.xz"
+          work=$(mktemp -d)
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$work/$archive" "https://nodejs.org/dist/${node_ver}/${archive}"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$work/SHASUMS256.txt" "https://nodejs.org/dist/${node_ver}/SHASUMS256.txt"
+          grep -F "$archive" "$work/SHASUMS256.txt" > "$work/${archive}.sha256line" || true
+          line_count=$(grep -c . "$work/${archive}.sha256line" || true)
+          if [ "$line_count" -ne 1 ]; then
+            echo "官方 SHA256 里 ${archive} 不是刚好一行（${line_count}）" >&2
+            exit 1
+          fi
+          (
+            cd "$work"
+            sha256sum -c "${archive}.sha256line"
+          )
+          tar -xJf "$work/$archive" -C "$work"
+          node_bin="$work/$node_name/bin/node"
+          npm_bin="$work/$node_name/bin/npm"
+          if [ ! -f "$node_bin" ] || [ ! -e "$npm_bin" ]; then
+            echo "压缩包里没有 bin/node 或 npm，停止。不改用别的 Node。" >&2
+            exit 1
+          fi
+          export PATH="$work/$node_name/bin:${PATH}"
+          hash -r
+          test "$(realpath "$(command -v node)")" = "$(realpath "$node_bin")"
+          test "$("$node_bin" -p "process.version")" = "$node_ver"
+          ci_ok=0
+          for attempt in 1 2 3; do
+            if npm ci --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000; then
+              ci_ok=1
+              break
+            fi
+            echo "npm ci 第 ${attempt} 次失败，清掉 node_modules 后再试。" >&2
+            rm -rf node_modules
+          done
+          if [ "$ci_ok" -ne 1 ]; then
+            echo "npm ci 失败，停止。不上传空的安装包。" >&2
+            exit 1
+          fi
+          mkdir -p apps/desktop/vendor/node
+          cp -f "$node_bin" apps/desktop/vendor/node/node
+          chmod 0755 apps/desktop/vendor/node/node
+          test -x apps/desktop/vendor/node/node
+          file apps/desktop/vendor/node/node | grep -q ELF
+          npm run build -w @canvas/web
+          npm run build -w @canvas/desktop
+          test -f apps/web/dist/index.html
+          test -f apps/desktop/dist/main.js
+          npm run dist:linux -w @canvas/desktop
+          deb="apps/desktop/release/CanvasApp-0.1.0-amd64.deb"
+          appimage="apps/desktop/release/CanvasApp-0.1.0-x86_64.AppImage"
+          test -s "$deb"
+          test -s "$appimage"
+          test "$(dpkg-deb -f "$deb" Package)" = "canvas-app"
+          test "$(dpkg-deb -f "$deb" Architecture)" = "amd64"
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: canvas-linux-packages
+          if-no-files-found: error
+          path: |
+            apps/desktop/release/CanvasApp-0.1.0-x86_64.AppImage
+            apps/desktop/release/CanvasApp-0.1.0-amd64.deb

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { homedir as osHomedir } from "node:os";
+import { join, posix, resolve, win32 } from "node:path";
 import { BACKEND_MESSAGES } from "./messages.ts";
 
 export const APP_FOLDER_NAME = "CanvasApp";
@@ -74,6 +75,10 @@ export async function writeAppJson(dataDir: string, patch: Partial<AppJson>): Pr
 export type ResolveAppDataDirInput = {
   argv?: string[];
   env?: NodeJS.ProcessEnv;
+  /** 缺省是 process.platform。测试注入，避免非 Linux 机器跑不了 linux 分支。 */
+  platform?: NodeJS.Platform;
+  /** 缺省是 os.homedir。HOME 非空时不会调用。 */
+  homedir?: () => string;
 };
 
 export class AppDataError extends Error {
@@ -154,13 +159,41 @@ export function parseListenPort(
   return port;
 }
 
+function linuxHome(env: NodeJS.ProcessEnv, homedir: () => string): string {
+  const home = env.HOME;
+  if (home !== undefined && home.length > 0) {
+    if (!posix.isAbsolute(home)) {
+      throw new AppDataError("MISSING_LINUX_APP_DATA", BACKEND_MESSAGES.missingLinuxAppData);
+    }
+    return home;
+  }
+  const fromOs = homedir();
+  if (!posix.isAbsolute(fromOs)) {
+    throw new AppDataError("MISSING_LINUX_APP_DATA", BACKEND_MESSAGES.missingLinuxAppData);
+  }
+  return fromOs;
+}
+
+function linuxAppDataDir(env: NodeJS.ProcessEnv, homedir: () => string): string {
+  const xdg = env.XDG_DATA_HOME;
+  if (xdg !== undefined && xdg.length > 0 && posix.isAbsolute(xdg)) {
+    return posix.join(xdg, APP_FOLDER_NAME);
+  }
+  return posix.join(linuxHome(env, homedir), ".local", "share", APP_FOLDER_NAME);
+}
+
 /**
  * 应用数据目录。测试必须传入 --data-dir 或 CANVAS_APP_DATA_DIR，
- * 不要写到真实 %LOCALAPPDATA%\\CanvasApp。
+ * 不要写到真实 %LOCALAPPDATA%\CanvasApp，也不要写到真实家目录。
+ * platform 缺省是 process.platform，调用方不必注入 home。
+ * win32 只认绝对路径的 LOCALAPPDATA。linux 认绝对路径的 XDG_DATA_HOME，
+ * 否则用家目录下的 .local/share/CanvasApp。
  */
 export function resolveAppDataDir(input: ResolveAppDataDirInput = {}): string {
   const argv = input.argv ?? process.argv.slice(2);
   const env = input.env ?? process.env;
+  const platform = input.platform ?? process.platform;
+  const homedir = input.homedir ?? osHomedir;
   const fromArg = parseFlag(argv, "--data-dir");
   if (fromArg !== undefined && fromArg.length > 0) {
     return resolve(fromArg);
@@ -169,11 +202,11 @@ export function resolveAppDataDir(input: ResolveAppDataDirInput = {}): string {
   if (fromEnv !== undefined && fromEnv.length > 0) {
     return resolve(fromEnv);
   }
-  const localAppData = env.LOCALAPPDATA;
-  if (localAppData === undefined || localAppData.length === 0) {
-    throw new AppDataError("MISSING_LOCALAPPDATA", BACKEND_MESSAGES.missingLocalAppData);
+  if (platform === "linux") {
+    return linuxAppDataDir(env, homedir);
   }
-  if (!isAbsolute(localAppData)) {
+  const localAppData = env.LOCALAPPDATA;
+  if (localAppData === undefined || localAppData.length === 0 || !win32.isAbsolute(localAppData)) {
     throw new AppDataError("MISSING_LOCALAPPDATA", BACKEND_MESSAGES.missingLocalAppData);
   }
   return join(localAppData, APP_FOLDER_NAME);

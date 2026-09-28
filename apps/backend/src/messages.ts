@@ -6,6 +6,7 @@ export { portOccupiedMessage, USER_FACING };
 export const BACKEND_MESSAGES = {
   lockHeld: "画布后端已经在运行。",
   missingLocalAppData: "找不到 LOCALAPPDATA，无法确定应用数据目录。",
+  missingLinuxAppData: "找不到家目录，无法确定应用数据目录。",
   invalidListenPort: "端口无效。",
   invalidProjectName: "工程名不能使用。",
   forbiddenProjectLocation: "不能把工程放在这个位置。",

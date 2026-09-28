@@ -9,6 +9,7 @@ import {
   LOCK_HELD_LINE,
   WEB_ROOT_MISSING_LINE,
   appendShellLog,
+  appDataDir,
   backendNodeBin,
   backendSpawnSpec,
   childEnv,
@@ -41,9 +42,17 @@ test("后端可执行文件是系统 Node 字面量，不用 process.execPath", 
   assert.doesNotMatch(mainSrc, /ELECTRON_RUN_AS_NODE\s*=/);
 });
 
-test("安装包里的 Node 和画布根在 resources 下，不写死本机路径", () => {
+test("安装包里的 Node 和画布根在 resources 下，不写死本机路径", async () => {
   assert.equal(packagedNodeBin("D:\\app\\resources"), "D:\\app\\resources\\node\\node.exe");
+  assert.equal(packagedNodeBin("D:\\app\\resources", "win32"), "D:\\app\\resources\\node\\node.exe");
+  assert.equal(packagedNodeBin("D:\\app\\resources", "linux"), "D:\\app\\resources\\node\\node");
   assert.equal(packagedNodeBin("D:\\app\\resources").includes("Program Files\\nodejs"), false);
+  const launchSrc = await readFile(new URL("./launch.ts", import.meta.url), "utf8");
+  const mainSrc = await readFile(new URL("./main.ts", import.meta.url), "utf8");
+  assert.match(launchSrc, /platform: string = "win32"/);
+  assert.match(mainSrc, /packagedNodeBin\(process\.resourcesPath, process\.platform\)/);
+  assert.equal(launchSrc.includes("process.execPath"), false);
+  assert.equal(mainSrc.includes("process.execPath"), false);
 });
 
 test("默认仍传 --serve-web；CANVAS_SHELL_DEV=1 才改开开发页", () => {
@@ -138,6 +147,33 @@ test("壳日志在临时目录：片段令牌和 test-key-not-real 都是 0 次"
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("linux 数据目录和壳日志不依赖真的在 Linux 上跑", () => {
+  const homedir = (): string => {
+    throw new Error("不应调用");
+  };
+  assert.equal(appDataDir({ XDG_DATA_HOME: "/srv/canvas" }, "linux", homedir), "/srv/canvas/CanvasApp");
+  assert.equal(shellLogDirectory({ XDG_DATA_HOME: "/srv/canvas" }, "linux", homedir), "/srv/canvas/CanvasApp/logs");
+  assert.equal(appDataDir({ HOME: "/home/canvas" }, "linux", homedir), "/home/canvas/.local/share/CanvasApp");
+  assert.equal(
+    shellLogDirectory({ HOME: "/home/canvas" }, "linux", homedir),
+    "/home/canvas/.local/share/CanvasApp/logs",
+  );
+  assert.equal(appDataDir({ HOME: "relative/home" }, "linux", homedir), null);
+  assert.throws(
+    () => shellLogDirectory({ HOME: "relative/home" }, "linux", homedir),
+    (err: unknown) => err instanceof Error && !err.message.includes("LOCALAPPDATA"),
+  );
+  assert.equal(
+    appDataDir({ CANVAS_APP_DATA_DIR: "D:\\custom", HOME: "/home/canvas" }, "linux", homedir),
+    resolve("D:\\custom"),
+  );
+  assert.equal(
+    shellLogDirectory({ CANVAS_SHELL_LOG_DIR: "D:\\logs", HOME: "relative/home" }, "linux", homedir),
+    resolve("D:\\logs"),
+  );
+  assert.equal(appDataDir({ LOCALAPPDATA: "relative-local" }, "win32"), null);
 });
 
 test("端口上已有本后端时只拼片段地址，不杀占用者", async () => {

@@ -4,7 +4,10 @@
 
 ## 给要直接使用的人
 
-到 [Releases](https://github.com/kapone-systems/infinite-canvas/releases) 下载 `CanvasApp-Setup-0.1.0.exe`，安装后从开始菜单打开「无限画布」。
+到 [Releases](https://github.com/kapone-systems/infinite-canvas/releases) 下载安装包。
+
+- Windows：`CanvasApp-Setup-0.1.0.exe`。安装后从开始菜单打开「无限画布」。
+- Linux x64：`CanvasApp-0.1.0-x86_64.AppImage` 或 `CanvasApp-0.1.0-amd64.deb`。AppImage 先 `chmod +x` 再运行。deb 的包名是 `canvas-app`，窗口名仍是「无限画布」。Linux 上还不能把厂商密钥写进系统凭据库，这一步仍只在 Windows 上可用。
 
 打开后点「新建工程」，粘贴一个文件夹路径并填写工程名。工程文件在你选的文件夹里，可以整夹拷走。
 

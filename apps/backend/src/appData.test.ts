@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { AppDataError, APP_FOLDER_NAME, parseListenPort, parseServeWeb, resolveAppDataDir } from "./appData.ts";
+import { BACKEND_MESSAGES } from "./messages.ts";
 
 const REAL_LOCAL = process.env.LOCALAPPDATA;
 const REAL_CANVAS = REAL_LOCAL ? join(REAL_LOCAL, APP_FOLDER_NAME) : null;
@@ -56,8 +57,114 @@ test("默认路径是传入的 LOCALAPPDATA\\CanvasApp，不是写死用户目�
 
 test("没有 LOCALAPPDATA 且没有注入时启动失败", () => {
   assert.throws(
-    () => resolveAppDataDir({ argv: [], env: {} }),
+    () => resolveAppDataDir({ argv: [], env: {}, platform: "win32" }),
+    (err: unknown) =>
+      err instanceof AppDataError &&
+      err.code === "MISSING_LOCALAPPDATA" &&
+      err.message === BACKEND_MESSAGES.missingLocalAppData,
+  );
+});
+
+test("win32 上相对路径的 LOCALAPPDATA 失败，有 HOME 也不改走家目录", () => {
+  assert.throws(
+    () =>
+      resolveAppDataDir({
+        argv: [],
+        env: { LOCALAPPDATA: "relative-local", HOME: "/home/canvas" },
+        platform: "win32",
+        homedir: () => "/home/should-not",
+      }),
     (err: unknown) => err instanceof AppDataError && err.code === "MISSING_LOCALAPPDATA",
+  );
+  assert.throws(
+    () =>
+      resolveAppDataDir({
+        argv: [],
+        env: { HOME: "/home/canvas" },
+        platform: "win32",
+        homedir: () => "/home/canvas",
+      }),
+    (err: unknown) => err instanceof AppDataError && err.code === "MISSING_LOCALAPPDATA",
+  );
+});
+
+test("linux 用 XDG_DATA_HOME，否则用家目录，不依赖真的在 Linux 上跑", () => {
+  const boom = (): string => {
+    throw new Error("不应调用 homedir");
+  };
+  assert.equal(
+    resolveAppDataDir({
+      argv: [],
+      env: { XDG_DATA_HOME: "/srv/canvas", HOME: "not-absolute", LOCALAPPDATA: "C:\\Users\\Lenovo\\AppData\\Local" },
+      platform: "linux",
+      homedir: boom,
+    }),
+    "/srv/canvas/CanvasApp",
+  );
+  assert.equal(
+    resolveAppDataDir({
+      argv: [],
+      env: { XDG_DATA_HOME: "", HOME: "/home/canvas" },
+      platform: "linux",
+      homedir: boom,
+    }),
+    "/home/canvas/.local/share/CanvasApp",
+  );
+  assert.equal(
+    resolveAppDataDir({
+      argv: [],
+      env: { XDG_DATA_HOME: "relative/xdg", HOME: "/home/canvas" },
+      platform: "linux",
+      homedir: boom,
+    }),
+    "/home/canvas/.local/share/CanvasApp",
+  );
+  assert.equal(
+    resolveAppDataDir({
+      argv: [],
+      env: {},
+      platform: "linux",
+      homedir: () => "/home/from-os",
+    }),
+    "/home/from-os/.local/share/CanvasApp",
+  );
+  assert.equal(
+    resolveAppDataDir({
+      argv: [],
+      env: { HOME: "" },
+      platform: "linux",
+      homedir: () => "/home/from-empty",
+    }),
+    "/home/from-empty/.local/share/CanvasApp",
+  );
+  let called = false;
+  assert.equal(BACKEND_MESSAGES.missingLinuxAppData.includes("LOCALAPPDATA"), false);
+  assert.throws(
+    () =>
+      resolveAppDataDir({
+        argv: [],
+        env: { HOME: "relative/home", XDG_DATA_HOME: "" },
+        platform: "linux",
+        homedir: () => {
+          called = true;
+          return "/home/should-not";
+        },
+      }),
+    (err: unknown) =>
+      err instanceof AppDataError &&
+      err.code === "MISSING_LINUX_APP_DATA" &&
+      err.message === BACKEND_MESSAGES.missingLinuxAppData,
+  );
+  assert.equal(called, false);
+  assert.throws(
+    () =>
+      resolveAppDataDir({
+        argv: [],
+        env: {},
+        platform: "linux",
+        homedir: () => "relative-home",
+      }),
+    (err: unknown) => err instanceof AppDataError && err.code === "MISSING_LINUX_APP_DATA",
   );
 });
 
