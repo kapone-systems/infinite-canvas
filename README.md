@@ -6,7 +6,7 @@
 
 到 [Releases](https://github.com/kapone-systems/infinite-canvas/releases) 下载安装包。
 
-- Windows：`CanvasApp-Setup-0.1.2.exe`。0.1.1 安装后会停在「本机服务没连上。」，请改下这一版。安装后从开始菜单打开「无限画布」。
+- Windows：`CanvasApp-Setup-0.1.3.exe`。0.1.2 的设置页没有「远程电脑」，请改下这一版。安装后从开始菜单打开「无限画布」。
 - Linux x64：仍是上一版 `CanvasApp-0.1.0-x86_64.AppImage` 或 `CanvasApp-0.1.0-amd64.deb`。这台 Windows 打不出 AppImage。AppImage 先 `chmod +x` 再运行。deb 的包名是 `canvas-app`，窗口名仍是「无限画布」。Linux 上还不能把厂商密钥写进系统凭据库。远程电脑的 SSH 密码或私钥也只在 Windows 凭据库里保存，所以这一版的远程连接请用 Windows 安装包。
 
 打开后点「新建工程」，粘贴一个文件夹路径并填写工程名。工程文件在你选的文件夹里，可以整夹拷走。
