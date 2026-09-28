@@ -43,6 +43,7 @@ eval/
 apps/desktop/vendor/
 apps/desktop/stage/
 apps/desktop/release/
+apps/desktop/release-*/
 
 # 编辑器本地状态
 .zcode/

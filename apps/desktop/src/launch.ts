@@ -177,6 +177,35 @@ export function userFacingStderr(stderr: string): string[] {
   return out;
 }
 
+const DIALOG_REASON_MAX = 400;
+
+/** 已知句子优先。其余失败带上第一条不含令牌的原因，避免只显示「本机服务没连上。」。 */
+export function backendFailureDialog(stderr: string): string {
+  const known = userFacingStderr(stderr);
+  if (known.length > 0) {
+    return known.join("\n");
+  }
+  const reason = firstFailureReason(stderr);
+  if (reason === null) {
+    return "本机服务没连上。";
+  }
+  return `本机服务没连上。\n${reason}`;
+}
+
+function firstFailureReason(stderr: string): string | null {
+  for (const line of stderr.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("at ") || /^Node\.js v\d/.test(trimmed)) {
+      continue;
+    }
+    if (trimmed.includes("#token=") || trimmed.includes("test-key-not-real")) {
+      continue;
+    }
+    return trimmed.length > DIALOG_REASON_MAX ? `${trimmed.slice(0, DIALOG_REASON_MAX)}…` : trimmed;
+  }
+  return null;
+}
+
 export function shouldAttachExisting(stderr: string): boolean {
   return stderr.includes(LOCK_HELD_LINE) || occupiedPort(stderr) !== null;
 }

@@ -12,7 +12,7 @@ import {
   shellLogDirectory,
   shouldAttachExisting,
   spawnBackend,
-  userFacingStderr,
+  backendFailureDialog,
   windowChrome,
   windowWebPreferences,
   devShellPageUrl,
@@ -96,9 +96,7 @@ function bindShutdown(window: BrowserWindow, child: ChildProcess): void {
 }
 
 function showBackendMessage(stderr: string): void {
-  const lines = userFacingStderr(stderr);
-  const message = lines.length > 0 ? lines.join("\n") : "本机服务没连上。";
-  dialog.showErrorBox("画布", message);
+  dialog.showErrorBox("画布", backendFailureDialog(stderr));
   app.quit();
 }
 

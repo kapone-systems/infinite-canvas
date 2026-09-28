@@ -19,6 +19,7 @@ import {
   readExistingFragmentUrl,
   repoRootFromDesktopModule,
   shellLogDirectory,
+  backendFailureDialog,
   userFacingStderr,
   windowChrome,
   windowWebPreferences,
@@ -102,7 +103,20 @@ test("锁占用、缺界面文件、端口占用要能交给用户，且不是�
   const portLine = "端口 8787 已被占用。如果画布后端已经在运行，请打开原来的地址；否则换一个端口再启动。";
   const stderr = `${LOCK_HELD_LINE}\n${WEB_ROOT_MISSING_LINE}\n${portLine}\nError: stack\n`;
   assert.deepEqual(userFacingStderr(stderr), [LOCK_HELD_LINE, WEB_ROOT_MISSING_LINE, portLine]);
+  assert.equal(backendFailureDialog(stderr), [LOCK_HELD_LINE, WEB_ROOT_MISSING_LINE, portLine].join("\n"));
   assert.equal(parseFragmentAddress(portLine), null);
+});
+
+test("未知失败要带上原因，并丢掉令牌和堆栈", () => {
+  const crash = "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@canvas/schema'\n    at Module._resolveFilename\n";
+  assert.deepEqual(userFacingStderr(crash), []);
+  assert.equal(
+    backendFailureDialog(crash),
+    "本机服务没连上。\nError [ERR_MODULE_NOT_FOUND]: Cannot find package '@canvas/schema'",
+  );
+  assert.equal(backendFailureDialog("http://127.0.0.1:8787/#token=abc\n    at hidden\n"), "本机服务没连上。");
+  assert.equal(backendFailureDialog("test-key-not-real\n"), "本机服务没连上。");
+  assert.equal(backendFailureDialog(""), "本机服务没连上。");
 });
 
 test("窗口隔离、有边框，源码没有 safeStorage、file://、托盘、无边框，不重写命中和撤销", async () => {
