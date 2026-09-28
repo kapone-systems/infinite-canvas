@@ -174,3 +174,88 @@ export async function deleteSecret(
   }
   return { ok: true, status: result.status, data: undefined };
 }
+
+export type SshComfyView =
+  | { configured: false }
+  | {
+      configured: true;
+      host: string;
+      port: number;
+      username: string;
+      remoteComfyPort: number;
+      connected: boolean;
+      localPort?: number;
+    };
+
+export async function getSshComfy(token: string): Promise<ApiResult<SshComfyView>> {
+  const result = await requestJson("/api/app/ssh-comfy", {
+    method: "GET",
+    headers: apiHeaders(token, false),
+  });
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, status: result.status, data: result.data as SshComfyView };
+}
+
+export async function putSshComfy(
+  token: string,
+  input: { host: string; port: number; username: string; remoteComfyPort: number; secret: string },
+): Promise<ApiResult<undefined>> {
+  const result = await requestJson("/api/app/ssh-comfy", {
+    method: "PUT",
+    headers: apiHeaders(token, true),
+    body: JSON.stringify(input),
+  });
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, status: result.status, data: undefined };
+}
+
+export async function connectSshComfy(token: string): Promise<ApiResult<undefined>> {
+  const result = await requestJson("/api/app/ssh-comfy/connect", {
+    method: "POST",
+    headers: apiHeaders(token, false),
+  });
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, status: result.status, data: undefined };
+}
+
+export async function disconnectSshComfy(token: string): Promise<ApiResult<undefined>> {
+  const result = await requestJson("/api/app/ssh-comfy/disconnect", {
+    method: "POST",
+    headers: apiHeaders(token, false),
+  });
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, status: result.status, data: undefined };
+}
+
+export async function getUseLocalComfy(token: string): Promise<ApiResult<{ enabled: boolean }>> {
+  const result = await requestJson("/api/app/use-local-comfy", {
+    method: "GET",
+    headers: apiHeaders(token, false),
+  });
+  if (!result.ok) {
+    return result;
+  }
+  const body = result.data;
+  const enabled = body !== null && typeof body === "object" && (body as { enabled?: unknown }).enabled === true;
+  return { ok: true, status: result.status, data: { enabled } };
+}
+
+export async function putUseLocalComfy(token: string, enabled: boolean): Promise<ApiResult<undefined>> {
+  const result = await requestJson("/api/app/use-local-comfy", {
+    method: "PUT",
+    headers: apiHeaders(token, true),
+    body: JSON.stringify({ enabled }),
+  });
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, status: result.status, data: undefined };
+}

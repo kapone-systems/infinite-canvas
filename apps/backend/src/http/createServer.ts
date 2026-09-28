@@ -5,6 +5,7 @@ import type { ComfyExecutor, ComfyReachability } from "../execution/comfy/client
 import { realComfyReachability } from "../execution/comfy/client.ts";
 import type { CloudVideoAdapter } from "../execution/adapters/exampleVideoFixture.ts";
 import { createExecutionRuntime, type ExecutionRuntime } from "../execution/runtime.ts";
+import { readUseLocalComfySync } from "../execution/useLocalComfy.ts";
 import { openTaskStore } from "../execution/taskStore.ts";
 import type { FfmpegProbeResult } from "../ffmpegStatus.ts";
 import { BACKEND_MESSAGES } from "../messages.ts";
@@ -18,9 +19,11 @@ import { handleMediaIngest } from "./ingest.ts";
 import { handleIssueMediaTicket, handleMediaTicketGet, MediaTicketStore } from "./mediaTickets.ts";
 import { handleProjects } from "./projects.ts";
 import { handleSecrets } from "./secrets.ts";
+import { handleSshComfy, handleUseLocalComfy } from "./sshComfy.ts";
 import { tryServeStatic } from "./staticFiles.ts";
 import { createMemorySecretStore } from "../secrets/memorySecretStore.ts";
-import type { SecretStore } from "../secrets/types.ts";
+import type { SecretPlatform, SecretStore } from "../secrets/types.ts";
+import { createComfyTunnel, type ComfyTunnel, type SshSpawn } from "../ssh/comfyTunnel.ts";
 
 export const MAX_JSON_BYTES = 16 * 1024 * 1024;
 
@@ -54,6 +57,17 @@ export type BackendOptions = {
   secretPresent?: (ref: { providerId: string; account?: string }) => boolean;
   /** 缺省是内存库。生产进程传入 Windows 实现。测试不要写真实凭据库。 */
   secretStore?: SecretStore;
+  /** 有 --fake-executor 时为 false。缺省 false，测试仍走传入的替身。 */
+  allowRealComfy?: boolean;
+  /** 缺省读 use-local-comfy.json，没有文件当关。 */
+  useLocalComfy?: boolean;
+  fallbackExecutor?: ComfyExecutor;
+  /** 缺省是不碰真实 ssh、不写 Windows 凭据库的隧道。生产进程传入系统 ssh。 */
+  sshTunnel?: ComfyTunnel;
+  sshPlatform?: SecretPlatform;
+  sshSpawn?: SshSpawn;
+  sshAvailable?: () => boolean;
+  restrictSecretFile?: (filePath: string) => Promise<void>;
 };
 
 export type Backend = {
@@ -154,6 +168,16 @@ export function createBackend(options: BackendOptions): Backend {
     deriveVideo: options.deriveVideo,
     secretPresent: options.secretPresent,
     secretStore,
+    allowRealComfy: options.allowRealComfy === true,
+    useLocalComfy: options.useLocalComfy ?? readUseLocalComfySync(options.dataDir),
+    fallbackExecutor: options.fallbackExecutor ?? options.executor,
+  });
+  const sshTunnel = options.sshTunnel ?? createComfyTunnel({
+    dataDir: options.dataDir,
+    platform: options.sshPlatform ?? inertSshPlatform(),
+    restrictFile: options.restrictSecretFile ?? (async () => {}),
+    spawnSsh: options.sshSpawn,
+    sshAvailable: options.sshAvailable ?? (() => false),
   });
 
   const server = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
@@ -241,7 +265,15 @@ export function createBackend(options: BackendOptions): Backend {
         return;
       }
 
-      if (await handleAppConfig(req, res, url, body, execution, options.ffmpeg)) {
+      if (await handleAppConfig(req, res, url, body, execution, options.ffmpeg, () => sshTunnel.disconnect())) {
+        return;
+      }
+
+      if (await handleUseLocalComfy(req, res, url, body, { dataDir: options.dataDir, runtime: execution })) {
+        return;
+      }
+
+      if (await handleSshComfy(req, res, url, body, { tunnel: sshTunnel, runtime: execution })) {
         return;
       }
 
@@ -283,6 +315,7 @@ export function createBackend(options: BackendOptions): Backend {
       port = next;
     },
     close: async () => {
+      await sshTunnel.shutdown();
       execution.dispose();
       await session.flushAutosave();
       taskStore.close();
@@ -299,6 +332,37 @@ export function createBackend(options: BackendOptions): Backend {
           resolve();
         });
       });
+    },
+  };
+}
+
+function inertSshPlatform(): SecretPlatform {
+  const creds = new Map<string, Uint8Array>();
+  return {
+    credWrite(name, blob) {
+      creds.set(name, Uint8Array.from(blob));
+    },
+    credRead(name) {
+      const found = creds.get(name);
+      return found === undefined ? null : Uint8Array.from(found);
+    },
+    credDelete(name) {
+      creds.delete(name);
+    },
+    protectData(plain) {
+      const out = new Uint8Array(plain.byteLength + 1);
+      out[0] = 0x5a;
+      for (let i = 0; i < plain.byteLength; i += 1) {
+        out[i + 1] = (plain[i] ?? 0) ^ 0xff;
+      }
+      return out;
+    },
+    unprotectData(cipher) {
+      const out = new Uint8Array(Math.max(0, cipher.byteLength - 1));
+      for (let i = 0; i < out.byteLength; i += 1) {
+        out[i] = (cipher[i + 1] ?? 0) ^ 0xff;
+      }
+      return out;
     },
   };
 }

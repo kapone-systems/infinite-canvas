@@ -19,6 +19,24 @@ export function SettingsForm(props: {
   onSecretDraftChange?: (value: string) => void;
   onSaveSecret?: () => void;
   onDeleteSecret?: () => void;
+  sshHost?: string;
+  sshPort?: string;
+  sshUsername?: string;
+  sshRemotePort?: string;
+  sshSecret?: string;
+  sshConnected?: boolean;
+  sshLocalPort?: number | null;
+  sshDetail?: string | null;
+  onSshHostChange?: (value: string) => void;
+  onSshPortChange?: (value: string) => void;
+  onSshUsernameChange?: (value: string) => void;
+  onSshRemotePortChange?: (value: string) => void;
+  onSshSecretChange?: (value: string) => void;
+  onSshConnect?: () => void;
+  onSshDisconnect?: () => void;
+  useLocalComfy?: boolean;
+  onUseLocalComfyChange?: (value: boolean) => void;
+  onSaveUseLocalComfy?: () => void;
 }): ReactElement {
   const secretPresent = props.secretPresent ?? null;
   const secretDraft = props.secretDraft ?? "";
@@ -48,6 +66,147 @@ export function SettingsForm(props: {
           }}
         />
       </label>
+      <section data-remote-computer="">
+        <h3 className="inspector-title">{COPY.remoteComputer}</h3>
+        <label className="field">
+          <span>{COPY.sshHost}</span>
+          <input
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            data-ssh-host=""
+            value={props.sshHost ?? ""}
+            disabled={props.disabled || props.busy}
+            onChange={(event) => {
+              props.onSshHostChange?.(event.target.value);
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>{COPY.sshPort}</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            spellCheck={false}
+            data-ssh-port=""
+            value={props.sshPort ?? ""}
+            disabled={props.disabled || props.busy}
+            onChange={(event) => {
+              props.onSshPortChange?.(event.target.value);
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>{COPY.sshUsername}</span>
+          <input
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            data-ssh-username=""
+            value={props.sshUsername ?? ""}
+            disabled={props.disabled || props.busy}
+            onChange={(event) => {
+              props.onSshUsernameChange?.(event.target.value);
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>{COPY.remoteComfyPort}</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            spellCheck={false}
+            data-ssh-remote-port=""
+            value={props.sshRemotePort ?? ""}
+            disabled={props.disabled || props.busy}
+            onChange={(event) => {
+              props.onSshRemotePortChange?.(event.target.value);
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>{COPY.sshSecret}</span>
+          <input
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            data-ssh-secret=""
+            value={props.sshSecret ?? ""}
+            disabled={props.disabled || props.busy}
+            onChange={(event) => {
+              props.onSshSecretChange?.(event.target.value);
+            }}
+          />
+        </label>
+        {props.sshConnected === true && props.sshLocalPort != null ? (
+          <p className="page-hint" data-ssh-summary="">
+            {`${props.sshUsername ?? ""}@${props.sshHost ?? ""}:${props.sshPort ?? ""} → 本机 127.0.0.1:${props.sshLocalPort}`}
+          </p>
+        ) : null}
+        {props.sshDetail != null && props.sshDetail.length > 0 ? (
+          <p className="form-error" role="alert" data-ssh-detail="">
+            {props.sshDetail}
+          </p>
+        ) : null}
+        <div className="btn-row">
+          {props.sshConnected === true ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              data-ssh-disconnect=""
+              disabled={props.disabled || props.busy}
+              onClick={() => {
+                props.onSshDisconnect?.();
+              }}
+            >
+              {COPY.disconnectRemote}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary"
+              data-ssh-connect=""
+              disabled={props.disabled || props.busy}
+              onClick={() => {
+                props.onSshConnect?.();
+              }}
+            >
+              {COPY.connectRemoteComfy}
+            </button>
+          )}
+        </div>
+      </section>
+      <section data-use-local-comfy="">
+        <h3 className="inspector-title">{COPY.useLocalComfy}</h3>
+        <label className="field">
+          <input
+            type="checkbox"
+            data-use-local-comfy-toggle=""
+            checked={props.useLocalComfy === true}
+            disabled={props.disabled || props.busy}
+            onChange={(event) => {
+              props.onUseLocalComfyChange?.(event.target.checked);
+            }}
+          />
+          <span>{COPY.useLocalComfy}</span>
+        </label>
+        <p className="page-hint">{COPY.useLocalComfyHint}</p>
+        <div className="btn-row">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            data-use-local-comfy-save=""
+            disabled={props.disabled || props.busy}
+            onClick={() => {
+              props.onSaveUseLocalComfy?.();
+            }}
+          >
+            {COPY.save}
+          </button>
+        </div>
+      </section>
       {props.error !== null ? (
         <p className="form-error" role="alert">
           {props.error}

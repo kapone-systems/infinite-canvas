@@ -10,14 +10,16 @@ import {
   readAppJson,
   resolveAppDataDir,
 } from "./appData.ts";
-import { realComfyReachability, type ComfyReachability } from "./execution/comfy/client.ts";
+import { probeComfyHttp, realComfyReachability, type ComfyReachability } from "./execution/comfy/client.ts";
 import { createFixtureVideoAdapter, createNeedsSecretAdapter } from "./execution/adapters/exampleVideoFixture.ts";
 import { FakeExecutor, parseFakeExecutor } from "./execution/fakeExecutor.ts";
+import { argvRequestsFakeExecutor, readUseLocalComfySync } from "./execution/useLocalComfy.ts";
 import { probeFfmpegFfprobe } from "./ffmpegStatus.ts";
 import { createBackend, listenLoopback } from "./http/createServer.ts";
 import { createPlatformSecretStore } from "./secrets/platformSecretStore.ts";
 import { restrictSecretFile } from "./secrets/restrictFile.ts";
 import { createWindowsSecretPlatform } from "./secrets/windowsPlatform.ts";
+import { createComfyTunnel, systemSshAvailable } from "./ssh/comfyTunnel.ts";
 import { defaultWebRoot } from "./http/staticFiles.ts";
 import { acquireBackendLock, type LockHandle } from "./lock.ts";
 import { BACKEND_MESSAGES, portOccupiedMessage } from "./messages.ts";
@@ -141,6 +143,15 @@ export async function runBackend(
       ffprobePath: appJson.ffprobePath,
     });
 
+    const fakeExecutor = new FakeExecutor(parseFakeExecutor(argv, env));
+    const sshPlatform = createWindowsSecretPlatform();
+    const sshTunnel = createComfyTunnel({
+      dataDir,
+      platform: sshPlatform,
+      restrictFile: restrictSecretFile,
+      sshAvailable: () => systemSshAvailable(),
+      probe: probeComfyHttp,
+    });
     const backend = createBackend({
       token,
       dataDir,
@@ -150,17 +161,21 @@ export async function runBackend(
       accessLog: (line) => {
         console.log(line);
       },
-      executor: new FakeExecutor(parseFakeExecutor(argv, env)),
+      executor: fakeExecutor,
+      fallbackExecutor: fakeExecutor,
+      allowRealComfy: !argvRequestsFakeExecutor(argv),
+      useLocalComfy: readUseLocalComfySync(dataDir),
       comfyReachability: processReachability(argv, env),
       comfyBaseUrl: appJson.comfyBaseUrl ?? null,
       cloudAdapters: argv.includes("--fixture-hang")
         ? [createFixtureVideoAdapter({ hangPoll: true }), createNeedsSecretAdapter()]
         : undefined,
       secretStore: createPlatformSecretStore({
-        platform: createWindowsSecretPlatform(),
+        platform: sshPlatform,
         secretsDir: join(dataDir, "secrets"),
         restrictFile: restrictSecretFile,
       }),
+      sshTunnel,
     });
 
     try {

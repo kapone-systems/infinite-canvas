@@ -37,17 +37,24 @@ import { Viewport } from "./canvas/Viewport.tsx";
 import { applyRunEvent } from "./execution/applyRunEvent.ts";
 import {
   cancelTask,
+  connectSshComfy,
+  deleteSecret,
+  disconnectSshComfy,
   getAppConfig,
   getRun,
   getSecretPresent,
+  getSshComfy,
+  getUseLocalComfy,
   postRun,
   putComfyBaseUrl,
   putSecret,
-  deleteSecret,
+  putSshComfy,
+  putUseLocalComfy,
   recheckComfy,
   regeneratePreview,
   retryFailed,
   SETTINGS_SECRET_PROVIDER_ID,
+  type SshComfyView,
 } from "./execution/client.ts";
 import { subscribeRunEvents } from "./execution/events.ts";
 import { createFlushGate } from "./execution/flushGate.ts";
@@ -84,6 +91,39 @@ function createStore(): EditorStore {
   return new EditorStore();
 }
 
+function applySshView(
+  view: SshComfyView,
+  setHost: (value: string) => void,
+  setPort: (value: string) => void,
+  setUsername: (value: string) => void,
+  setRemotePort: (value: string) => void,
+  setConnected: (value: boolean) => void,
+  setLocalPort: (value: number | null) => void,
+): void {
+  if (!view.configured) {
+    setConnected(false);
+    setLocalPort(null);
+    return;
+  }
+  setHost(view.host);
+  setPort(String(view.port));
+  setUsername(view.username);
+  setRemotePort(String(view.remoteComfyPort));
+  setConnected(view.connected);
+  setLocalPort(view.connected && view.localPort !== undefined ? view.localPort : null);
+}
+
+function parsePort(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) {
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    return null;
+  }
+  return value;
+}
+
 export function App(): ReactElement {
   const storeRef = useRef<EditorStore | null>(null);
   if (storeRef.current === null) {
@@ -117,6 +157,15 @@ export function App(): ReactElement {
   const [secretPresent, setSecretPresent] = useState<boolean | null>(null);
   const [secretDraft, setSecretDraft] = useState("");
   const [secretError, setSecretError] = useState<string | null>(null);
+  const [sshHost, setSshHost] = useState("");
+  const [sshPort, setSshPort] = useState("");
+  const [sshUsername, setSshUsername] = useState("");
+  const [sshRemotePort, setSshRemotePort] = useState("");
+  const [sshSecret, setSshSecret] = useState("");
+  const [sshConnected, setSshConnected] = useState(false);
+  const [sshLocalPort, setSshLocalPort] = useState<number | null>(null);
+  const [sshDetail, setSshDetail] = useState<string | null>(null);
+  const [useLocalComfy, setUseLocalComfy] = useState(false);
   const [runRejectMessage, setRunRejectMessage] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
   const [focusId, setFocusId] = useState<string | null>(null);
@@ -910,6 +959,19 @@ export function App(): ReactElement {
             }
             setSecretPresent(result.data.present);
           });
+          void getSshComfy(currentToken).then((result) => {
+            if (!result.ok) {
+              setSshDetail(result.message);
+              return;
+            }
+            applySshView(result.data, setSshHost, setSshPort, setSshUsername, setSshRemotePort, setSshConnected, setSshLocalPort);
+            setSshSecret("");
+          });
+          void getUseLocalComfy(currentToken).then((result) => {
+            if (result.ok) {
+              setUseLocalComfy(result.data.enabled);
+            }
+          });
         }}
       />
       {midDisconnect ? <DisconnectBanner /> : null}
@@ -1136,6 +1198,105 @@ export function App(): ReactElement {
                 comfyBaseUrl={settingsUrl}
                 disabled={midDisconnect}
                 onComfyBaseUrlChange={setSettingsUrl}
+                sshHost={sshHost}
+                sshPort={sshPort}
+                sshUsername={sshUsername}
+                sshRemotePort={sshRemotePort}
+                sshSecret={sshSecret}
+                sshConnected={sshConnected}
+                sshLocalPort={sshLocalPort}
+                sshDetail={sshDetail}
+                onSshHostChange={setSshHost}
+                onSshPortChange={setSshPort}
+                onSshUsernameChange={setSshUsername}
+                onSshRemotePortChange={setSshRemotePort}
+                onSshSecretChange={setSshSecret}
+                onSshConnect={() => {
+                  const currentToken = tokenRef.current;
+                  if (currentToken === null) {
+                    return;
+                  }
+                  const port = parsePort(sshPort);
+                  const remotePort = parsePort(sshRemotePort);
+                  if (port === null || remotePort === null) {
+                    setSshDetail("请求没能完成。");
+                    return;
+                  }
+                  setSettingsBusy(true);
+                  setSshDetail(null);
+                  void (async () => {
+                    if (sshSecret.length > 0) {
+                      const saved = await putSshComfy(currentToken, {
+                        host: sshHost,
+                        port,
+                        username: sshUsername,
+                        remoteComfyPort: remotePort,
+                        secret: sshSecret,
+                      });
+                      if (!saved.ok) {
+                        setSettingsBusy(false);
+                        setSshDetail(saved.message);
+                        return;
+                      }
+                      setSshSecret("");
+                    }
+                    const connected = await connectSshComfy(currentToken);
+                    if (!connected.ok) {
+                      setSettingsBusy(false);
+                      setSshDetail(connected.message);
+                      const ssh = await getSshComfy(currentToken);
+                      if (ssh.ok) {
+                        applySshView(ssh.data, setSshHost, setSshPort, setSshUsername, setSshRemotePort, setSshConnected, setSshLocalPort);
+                      }
+                      return;
+                    }
+                    const cfg = await getAppConfig(currentToken);
+                    if (cfg.ok) {
+                      setSettingsUrl(cfg.data.comfyBaseUrl ?? "");
+                    }
+                    const ssh = await getSshComfy(currentToken);
+                    if (ssh.ok) {
+                      applySshView(ssh.data, setSshHost, setSshPort, setSshUsername, setSshRemotePort, setSshConnected, setSshLocalPort);
+                    }
+                    setSettingsBusy(false);
+                  })();
+                }}
+                onSshDisconnect={() => {
+                  const currentToken = tokenRef.current;
+                  if (currentToken === null) {
+                    return;
+                  }
+                  setSettingsBusy(true);
+                  setSshDetail(null);
+                  void disconnectSshComfy(currentToken).then(async (result) => {
+                    if (!result.ok) {
+                      setSettingsBusy(false);
+                      setSshDetail(result.message);
+                      return;
+                    }
+                    const ssh = await getSshComfy(currentToken);
+                    if (ssh.ok) {
+                      applySshView(ssh.data, setSshHost, setSshPort, setSshUsername, setSshRemotePort, setSshConnected, setSshLocalPort);
+                    }
+                    setSettingsBusy(false);
+                  });
+                }}
+                useLocalComfy={useLocalComfy}
+                onUseLocalComfyChange={setUseLocalComfy}
+                onSaveUseLocalComfy={() => {
+                  const currentToken = tokenRef.current;
+                  if (currentToken === null) {
+                    return;
+                  }
+                  setSettingsBusy(true);
+                  setSettingsError(null);
+                  void putUseLocalComfy(currentToken, useLocalComfy).then((result) => {
+                    setSettingsBusy(false);
+                    if (!result.ok) {
+                      setSettingsError(result.message);
+                    }
+                  });
+                }}
                 onSave={() => {
                   const currentToken = tokenRef.current;
                   if (currentToken === null) {
@@ -1144,10 +1305,15 @@ export function App(): ReactElement {
                   setSettingsBusy(true);
                   setSettingsError(null);
                   const value = settingsUrl.trim();
-                  void putComfyBaseUrl(currentToken, value.length === 0 ? null : value).then((result) => {
+                  void putComfyBaseUrl(currentToken, value.length === 0 ? null : value).then(async (result) => {
                     setSettingsBusy(false);
                     if (!result.ok) {
                       setSettingsError(result.message);
+                      return;
+                    }
+                    const ssh = await getSshComfy(currentToken);
+                    if (ssh.ok) {
+                      applySshView(ssh.data, setSshHost, setSshPort, setSshUsername, setSshRemotePort, setSshConnected, setSshLocalPort);
                     }
                   });
                 }}

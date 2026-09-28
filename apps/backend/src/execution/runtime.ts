@@ -43,7 +43,7 @@ import { redactSecret } from "../secrets/redactSecret.ts";
 import { createMemorySecretStore } from "../secrets/memorySecretStore.ts";
 import type { SecretStore } from "../secrets/types.ts";
 import type { ComfyExecutor, ComfyImage, ComfyProbeResult, ComfyPromptInspect, ComfyReachability, ComfyWaitResult } from "./comfy/client.ts";
-import { parseLocalComfyBaseUrl } from "./comfy/client.ts";
+import { ComfyHttpExecutor, parseLocalComfyBaseUrl } from "./comfy/client.ts";
 import {
   createFixtureVideoAdapter,
   createNeedsSecretAdapter,
@@ -82,6 +82,10 @@ export type ExecutionRuntime = CapabilityService & {
   setComfyBaseUrl: (value: unknown) => Promise<{ ok: true; url: string | null } | { ok: false; message: string }>;
   probeComfy: () => Promise<ComfyProbeResult>;
   recheckComfy: () => Promise<ComfyProbeResult>;
+  /** 设置页保存「使用本机 ComfyUI」时更换正在用的执行器。不写 app.json。 */
+  setUseLocalComfy: (enabled: boolean) => void;
+  getUseLocalComfy: () => boolean;
+  usingRealComfy: () => boolean;
   lastCancelMessage: (taskId: string) => string | null;
   watchRun: (runId: string, signal: AbortSignal) => AsyncIterable<import("@canvas/schema").RunEvent>;
   /** 打开工程后：sqlite 里已对不上的 queued/running 不得继续显示运行中。 */
@@ -114,6 +118,13 @@ export type ExecutionRuntimeOptions = {
   /** 只在 requiresSecret 时调用。缺省改走 secretStore，不读测试注入以外的覆盖。 */
   secretPresent?: (ref: { providerId: string; account?: string }) => boolean;
   secretStore?: SecretStore;
+  /**
+   * 只有开关为开且进程没有 --fake-executor 才换成真 ComfyHttpExecutor。
+   * 缺省关。现有测试不传这两项，仍用传入的替身。
+   */
+  allowRealComfy?: boolean;
+  useLocalComfy?: boolean;
+  fallbackExecutor?: ComfyExecutor;
 };
 
 type TaskSnapshot = PlannedSnapshot & {
@@ -180,7 +191,6 @@ function loadRecipeFn(id: string) {
 export function createExecutionRuntime(options: ExecutionRuntimeOptions): ExecutionRuntime {
   const store = options.store;
   const session = options.session;
-  const executor = options.executor;
   const reachability = options.reachability;
   const now = options.now ?? (() => new Date());
   const cancelTimeoutMs = options.cancelTimeoutMs ?? 10_000;
@@ -193,6 +203,19 @@ export function createExecutionRuntime(options: ExecutionRuntimeOptions): Execut
   const timeoutStarters = new Map<string, () => void>();
   const timeoutPromises = new Map<string, Promise<"timeout">>();
   let comfyBaseUrl = options.comfyBaseUrl ?? null;
+  let useLocalComfy = options.useLocalComfy === true;
+  const allowRealComfy = options.allowRealComfy === true;
+  let executor: ComfyExecutor | undefined = options.executor;
+
+  function installExecutor(): void {
+    if (allowRealComfy && useLocalComfy) {
+      executor = new ComfyHttpExecutor({ baseUrl: () => comfyBaseUrl });
+    } else {
+      executor = options.fallbackExecutor ?? options.executor;
+    }
+  }
+
+  installExecutor();
   let lastProbe: ComfyProbeResult | null = null;
   let disposed = false;
   let pumping = false;
@@ -618,6 +641,11 @@ export function createExecutionRuntime(options: ExecutionRuntimeOptions): Execut
     return { ok: true, url: comfyBaseUrl };
   }
 
+  function setUseLocalComfy(enabled: boolean): void {
+    useLocalComfy = enabled;
+    installExecutor();
+  }
+
   function buildPlan(request: RunRequest): ReturnType<typeof planExecution> {
     const opened = requireProject();
     if (opened.project.projectId !== request.projectId) {
@@ -838,6 +866,7 @@ export function createExecutionRuntime(options: ExecutionRuntimeOptions): Execut
       await failTask(task, userError("GENERATION_INCOMPLETE", USER_FACING.generationIncomplete));
       return;
     }
+    const runningExecutor = executor;
     const indexes = snap.retryIndexes ?? snap.seeds.map((_, i) => i);
     const iso0 = now().toISOString();
     let variants: Variant[];
@@ -896,7 +925,7 @@ export function createExecutionRuntime(options: ExecutionRuntimeOptions): Execut
         params: snap.params,
         seedUsed,
         uploadImage: async (bytes, mime) => {
-          const result = await executor.uploadImage({ bytes, mime });
+          const result = await runningExecutor.uploadImage({ bytes, mime });
           return result.name;
         },
         readMedia: readSnapMedia,
@@ -908,7 +937,7 @@ export function createExecutionRuntime(options: ExecutionRuntimeOptions): Execut
       }
       let submitted;
       try {
-        submitted = await executor.submit({
+        submitted = await runningExecutor.submit({
           taskId: task.taskId,
           promptText: snap.promptText,
           prompt: bound.prompt,
@@ -936,7 +965,7 @@ export function createExecutionRuntime(options: ExecutionRuntimeOptions): Execut
       persist([{ type: "task.running", runId: task.runId, taskId: task.taskId }], [{ taskId: task.taskId, state: "running" }]);
       publish({ type: "task.submitted", runId: task.runId, taskId: task.taskId, providerJobId: submitted.promptId });
       publish({ type: "task.running", runId: task.runId, taskId: task.taskId });
-      const waitPromise = executor.wait(submitted.promptId, abort.signal);
+      const waitPromise = runningExecutor.wait(submitted.promptId, abort.signal);
       const raced = await Promise.race([waitPromise, timeoutFor(task.taskId)]);
       if (disposed) {
         return;
@@ -2502,6 +2531,9 @@ export function createExecutionRuntime(options: ExecutionRuntimeOptions): Execut
     setComfyBaseUrl,
     probeComfy,
     recheckComfy: probeComfy,
+    setUseLocalComfy,
+    getUseLocalComfy: () => useLocalComfy,
+    usingRealComfy: () => executor instanceof ComfyHttpExecutor,
     lastCancelMessage: (taskId: string) => cancelMessages.get(taskId) ?? null,
     reconcileOpenProject,
   };

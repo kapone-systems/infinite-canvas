@@ -191,6 +191,7 @@ export const USER_FACING = {
   badgeSucceeded: "成功",
   badgeFailed: "失败",
   badgeStale: "过期",
+  opensshClientRequired: "需要系统可选功能「OpenSSH 客户端」。",
 } as const;
 
 /** 端口占用句。把实际尝试的端口填进去，不得把 8787 写死。 */

@@ -6,12 +6,12 @@
 
 到 [Releases](https://github.com/kapone-systems/infinite-canvas/releases) 下载安装包。
 
-- Windows：`CanvasApp-Setup-0.1.0.exe`。安装后从开始菜单打开「无限画布」。
-- Linux x64：`CanvasApp-0.1.0-x86_64.AppImage` 或 `CanvasApp-0.1.0-amd64.deb`。AppImage 先 `chmod +x` 再运行。deb 的包名是 `canvas-app`，窗口名仍是「无限画布」。Linux 上还不能把厂商密钥写进系统凭据库，这一步仍只在 Windows 上可用。
+- Windows：`CanvasApp-Setup-0.1.1.exe`。安装后从开始菜单打开「无限画布」。
+- Linux x64：`CanvasApp-0.1.1-x86_64.AppImage` 或 `CanvasApp-0.1.1-amd64.deb`。AppImage 先 `chmod +x` 再运行。deb 的包名是 `canvas-app`，窗口名仍是「无限画布」。Linux 上还不能把厂商密钥写进系统凭据库，这一步仍只在 Windows 上可用。远程电脑的 SSH 密码或私钥同样只在 Windows 凭据库里保存。
 
 打开后点「新建工程」，粘贴一个文件夹路径并填写工程名。工程文件在你选的文件夹里，可以整夹拷走。
 
-文生图、图生图目前是替身出图，不是连上你自己的模型。设置里要填一个能访问的本机 ComfyUI 地址，检查通过后大约 8 秒出一张小图。图生视频是夹具，不是某一家云厂商。文生文、文生视频、对口型还不能运行。没有 ffmpeg 时，视频只能留原片，做不出封面和预览。
+文生图、图生图默认仍是替身出图。设置里可以填本机 ComfyUI 地址，也可以用「远程电脑」经 SSH 把远端 ComfyUI 转到本机 `127.0.0.1`。要让运行走真 ComfyUI 而不是替身，再打开「使用本机 ComfyUI」。这一步的报文还没有对照远端版本核实，不能当成已经能出图。图生视频是夹具，不是某一家云厂商。文生文、文生视频、对口型还不能运行。没有 ffmpeg 时，视频只能留原片，做不出封面和预览。
 
 ## 给要改代码的人
 

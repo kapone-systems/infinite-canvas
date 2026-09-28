@@ -1,7 +1,7 @@
 {
   "name": "@canvas/desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "本机无限画布桌面窗口",
   "type": "module",
   "main": "dist/main.js",

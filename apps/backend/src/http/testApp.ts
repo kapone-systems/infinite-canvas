@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { ComfyExecutor, ComfyReachability } from "../execution/comfy/client.ts";
 import type { CloudVideoAdapter } from "../execution/adapters/exampleVideoFixture.ts";
 import type { SecretStore } from "../secrets/types.ts";
+import type { ComfyTunnel } from "../ssh/comfyTunnel.ts";
 import { startBackend, STUB_FFMPEG, type Backend } from "./createServer.ts";
 
 export const TEST_TOKEN = "phase1-test-token";
@@ -186,6 +187,10 @@ export async function startTestApp(options?: {
   }) => Promise<{ ok: true; media: MediaRef } | { ok: false }>;
   secretPresent?: (ref: { providerId: string; account?: string }) => boolean;
   secretStore?: SecretStore;
+  allowRealComfy?: boolean;
+  useLocalComfy?: boolean;
+  fallbackExecutor?: ComfyExecutor;
+  sshTunnel?: ComfyTunnel;
   reuse?: { root: string; dataDir: string; projectsDir: string; homeDir: string };
 }): Promise<TestApp> {
   const root = options?.reuse?.root ?? (await mkdtemp(join(tmpdir(), "canvas-http-")));
@@ -216,6 +221,10 @@ export async function startTestApp(options?: {
     deriveVideo: options?.deriveVideo,
     secretPresent: options?.secretPresent,
     secretStore: options?.secretStore,
+    allowRealComfy: options?.allowRealComfy,
+    useLocalComfy: options?.useLocalComfy,
+    fallbackExecutor: options?.fallbackExecutor,
+    sshTunnel: options?.sshTunnel,
   });
   return {
     root,
