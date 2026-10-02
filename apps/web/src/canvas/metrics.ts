@@ -83,6 +83,8 @@ export const EXTRACT_LEAVE_PX = 8;
 export const EXTRACT_GHOST_SCALE = 1.04;
 /** 非法连线回弹（P22）。prefers-reduced-motion 时为 0。 */
 export const CONNECT_BOUNCE_MS = 180;
+/** 重排时其它槽让位。prefers-reduced-motion 时手势写成 0。 */
+export const REORDER_SHIFT_MS = 120;
 
 /** 方案第 5.4 / F19：边色按角色。 */
 export const SLOT_ROLE_STROKE = {

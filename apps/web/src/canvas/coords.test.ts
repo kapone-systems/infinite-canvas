@@ -6,6 +6,9 @@ import {
   DEFAULT_CAMERA,
   panByScreenDelta,
   screenToWorld,
+  WHEEL_EXPONENT_CAP,
+  WHEEL_PIXELS_PER_LINE,
+  wheelFactor,
   worldLayerTransform,
   worldToScreen,
   zoomAtCenter,
@@ -61,7 +64,8 @@ test("zoomAtPointer：世界点钉在指针下", () => {
   const world = screenToWorld(pointer, camera, VIEW);
   const next = zoomAtPointer(camera, pointer, VIEW, -80);
   assert.ok(next.zoom > camera.zoom);
-  assert.equal(next.zoom, camera.zoom * WHEEL_ZOOM_FACTOR);
+  assert.equal(next.zoom, camera.zoom * wheelFactor(-80, 0));
+  assert.ok(next.zoom < camera.zoom * WHEEL_ZOOM_FACTOR);
   const screenAfter = worldToScreen(world, next, VIEW);
   assert.ok(Math.abs(screenAfter.x - pointer.x) < 1e-9);
   assert.ok(Math.abs(screenAfter.y - pointer.y) < 1e-9);
@@ -101,4 +105,31 @@ test("世界层 transform 用 translate3d+scale，不用 2D translate", () => {
   assert.equal(css.includes("translate(") && !css.includes("translate3d"), false);
   assert.ok(css.includes("translate3d"));
   assert.ok(!css.startsWith("translate("));
+});
+
+test("滚轮按 deltaMode 折算：一行大约 1.08，像素按比例缩小，单次指数封顶", () => {
+  assert.equal(WHEEL_PIXELS_PER_LINE, 100);
+  assert.equal(WHEEL_EXPONENT_CAP, 1);
+  const camera: Camera = { x: 10, y: 20, zoom: 1 };
+  assert.equal(wheelFactor(-1, 1), WHEEL_ZOOM_FACTOR);
+  assert.ok(Math.abs(wheelFactor(1, 1) - 1 / WHEEL_ZOOM_FACTOR) < 1e-12);
+  assert.equal(wheelFactor(-WHEEL_PIXELS_PER_LINE, 0), WHEEL_ZOOM_FACTOR);
+  assert.equal(wheelFactor(WHEEL_PIXELS_PER_LINE, 0), 1 / WHEEL_ZOOM_FACTOR);
+  const half = wheelFactor(-WHEEL_PIXELS_PER_LINE / 2, 0);
+  assert.ok(half > 1);
+  assert.ok(half < WHEEL_ZOOM_FACTOR);
+  assert.equal(wheelFactor(-WHEEL_PIXELS_PER_LINE * 8, 0), WHEEL_ZOOM_FACTOR);
+  assert.equal(wheelFactor(-3, 1), WHEEL_ZOOM_FACTOR);
+  assert.equal(wheelFactor(-1, 2), WHEEL_ZOOM_FACTOR);
+  const line = zoomAtPointer(camera, { x: 20, y: 20 }, VIEW, -1, 1);
+  assert.equal(line.zoom, camera.zoom * WHEEL_ZOOM_FACTOR);
+  const pixels = zoomAtPointer(camera, { x: 20, y: 20 }, VIEW, -WHEEL_PIXELS_PER_LINE, 0);
+  assert.equal(pixels.zoom, line.zoom);
+  const small = zoomAtPointer(camera, { x: 20, y: 20 }, VIEW, -10, 0);
+  assert.ok(small.zoom > camera.zoom);
+  assert.ok(small.zoom < pixels.zoom);
+  const capped = zoomAtPointer(camera, { x: 20, y: 20 }, VIEW, -800, 0);
+  assert.equal(capped.zoom, pixels.zoom);
+  assert.equal(zoomAtCenter(camera, -WHEEL_PIXELS_PER_LINE).x, camera.x);
+  assert.equal(zoomAtCenter(camera, -WHEEL_PIXELS_PER_LINE).zoom, WHEEL_ZOOM_FACTOR);
 });

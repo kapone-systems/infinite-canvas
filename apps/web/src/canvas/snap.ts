@@ -21,9 +21,12 @@ function nearest(value: number, candidates: number[], threshold: number): number
   return best;
 }
 
+export type SnapGuide = { axis: "x" | "y"; world: number };
+
 /**
  * 与其他节点的边或中心线距离 ≤ SNAP 屏幕像素时吸附。
  * 被拖节点彼此之间不互相吸附。位移写进 moveNodes。
+ * guides 只给覆盖层，不进文档。
  */
 export function snapWorldDelta(
   moving: readonly SnapRect[],
@@ -32,9 +35,9 @@ export function snapWorldDelta(
   dy: number,
   zoom: number,
   thresholdScreen = SNAP,
-): { dx: number; dy: number } {
+): { dx: number; dy: number; guides: SnapGuide[] } {
   if (moving.length === 0 || others.length === 0) {
-    return { dx, dy };
+    return { dx, dy, guides: [] };
   }
   const thresh = thresholdScreen / Math.max(zoom, 1e-6);
   const otherX: number[] = [];
@@ -47,6 +50,8 @@ export function snapWorldDelta(
   let snapDy = dy;
   let bestX = thresh;
   let bestY = thresh;
+  let guideX: number | null = null;
+  let guideY: number | null = null;
   for (const node of moving) {
     const nx = node.x + dx;
     const ny = node.y + dy;
@@ -60,6 +65,7 @@ export function snapWorldDelta(
         if (dist < bestX) {
           bestX = dist;
           snapDx = dx + adj;
+          guideX = hit;
         }
       }
     }
@@ -71,9 +77,17 @@ export function snapWorldDelta(
         if (dist < bestY) {
           bestY = dist;
           snapDy = dy + adj;
+          guideY = hit;
         }
       }
     }
   }
-  return { dx: snapDx, dy: snapDy };
+  const guides: SnapGuide[] = [];
+  if (guideX !== null) {
+    guides.push({ axis: "x", world: guideX });
+  }
+  if (guideY !== null) {
+    guides.push({ axis: "y", world: guideY });
+  }
+  return { dx: snapDx, dy: snapDy, guides };
 }

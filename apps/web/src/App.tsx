@@ -6,7 +6,7 @@ import {
   useSyncExternalStore,
   type ReactElement,
 } from "react";
-import { USER_FACING, generationHasSettledSuccess, type RunPlan } from "@canvas/schema";
+import { USER_FACING, generationHasSettledSuccess, type MediaRef, type RunPlan } from "@canvas/schema";
 import {
   createProject,
   emptyProjectTrash,
@@ -29,10 +29,11 @@ import { VideoNodeView } from "./canvas/VideoNode.tsx";
 import { VideoViewer } from "./canvas/VideoViewer.tsx";
 import { screenToWorld } from "./canvas/coords.ts";
 import { planLod } from "./canvas/lod.ts";
-import { HEALTH_DEADLINE_MS, HEALTH_POLL_MS } from "./canvas/metrics.ts";
+import { COPY_OFFSET, HEALTH_DEADLINE_MS, HEALTH_POLL_MS } from "./canvas/metrics.ts";
 import { NodeChrome } from "./canvas/NodeChrome.tsx";
 import { TextNodeView } from "./canvas/TextNode.tsx";
 import { ThumbImage } from "./canvas/ThumbImage.tsx";
+import { planSystemPaste } from "./canvas/shortcuts.ts";
 import { Viewport } from "./canvas/Viewport.tsx";
 import { applyRunEvent } from "./execution/applyRunEvent.ts";
 import {
@@ -171,6 +172,7 @@ export function App(): ReactElement {
   const [focusId, setFocusId] = useState<string | null>(null);
   const [textEditing, setTextEditing] = useState(false);
   const canvasHostRef = useRef<HTMLDivElement>(null);
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const [viewSize, setViewSize] = useState({ width: 1280, height: 720 });
 
   const tokenRef = useRef<string | null>(null);
@@ -186,6 +188,89 @@ export function App(): ReactElement {
 
   tokenRef.current = token;
   midRef.current = midDisconnect;
+
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent): void => {
+      const host = canvasHostRef.current;
+      if (host === null) {
+        return;
+      }
+      const rect = host.getBoundingClientRect();
+      lastPointerRef.current = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    };
+    const pasteWorld = (): { x: number; y: number } => {
+      const host = canvasHostRef.current;
+      const size = {
+        width: host?.clientWidth || viewSize.width,
+        height: host?.clientHeight || viewSize.height,
+      };
+      const pointer = lastPointerRef.current ?? { x: size.width / 2, y: size.height / 2 };
+      return screenToWorld(pointer, store.getSnapshot().camera, size);
+    };
+    const onPaste = (event: ClipboardEvent): void => {
+      const plan = planSystemPaste({
+        inField: event.target instanceof Element && event.target.closest("textarea, input") !== null,
+        fileCount: event.clipboardData?.files.length ?? 0,
+        text: event.clipboardData?.getData("text/plain") ?? "",
+        hasSessionClipboard: store.hasSessionClipboard(),
+      });
+      if (plan === "yield") {
+        return;
+      }
+      event.preventDefault();
+      if (plan === "session") {
+        store.pasteClipboard();
+        return;
+      }
+      if (plan === "too-long") {
+        setNotice(COPY.textTooLong);
+        return;
+      }
+      if (plan === "text") {
+        store.addTextAt(event.clipboardData?.getData("text/plain") ?? "", pasteWorld());
+        return;
+      }
+      const currentToken = tokenRef.current;
+      if (currentToken === null) {
+        return;
+      }
+      const files = [...(event.clipboardData?.files ?? [])];
+      const origin = pasteWorld();
+      void (async () => {
+        const items: { media: MediaRef; world: { x: number; y: number } }[] = [];
+        let placed = 0;
+        for (const file of files) {
+          const name = file.name.toLowerCase();
+          if (file.type === "image/svg+xml" || name.endsWith(".svg")) {
+            setNotice(COPY.ingestSvg);
+            continue;
+          }
+          const ingested = await ingestMediaFile(currentToken, file, file.name);
+          if (!ingested.ok) {
+            setNotice(ingested.message);
+            continue;
+          }
+          items.push({
+            media: ingested.data.media,
+            world: {
+              x: origin.x + placed * COPY_OFFSET,
+              y: origin.y + placed * COPY_OFFSET,
+            },
+          });
+          placed += 1;
+        }
+        if (items.length > 0) {
+          store.addImportedBatch(items);
+        }
+      })();
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("paste", onPaste);
+    };
+  }, [store, viewSize.width, viewSize.height]);
 
   const flushWorkingCopy = useCallback(async (): Promise<boolean> => {
     return flushGate.current.run(async () => {

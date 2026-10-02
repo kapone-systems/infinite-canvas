@@ -1,6 +1,9 @@
 /// <reference types="node" />
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   createEmptyProject,
   roleDisplayIndex,
@@ -1013,3 +1016,226 @@ test("切换版本看见版本 2 / 共 N，写高度，只标下游，周围坐�
   assert.equal(store.selectVersion(id, first.id), false);
   assert.equal(store.nodeMap()[id]?.currentVersionId, kept);
 });
+
+test("reorderSlots 只对调两个同角色槽；自己、缺槽、角色不同不产生命令；边 id 仍记在 targetSlotId", () => {
+  const store = semanticStore();
+  const id = store.addGenerationNode("reference");
+  const textId = store.addTextNode();
+  const srcA = store.addGenerationNode("txt2img");
+  assert.ok(id && textId && srcA);
+  assert.equal(store.addSlot(id, "reference_image").ok, true);
+  assert.equal(store.addSlot(id, "reference_image").ok, true);
+  assert.equal(store.injectSucceededVariants(srcA, [fixtureImageMediaRef()]), true);
+  const slots = store.nodeMap()[id]?.slots ?? [];
+  const prompt = slots.find((slot) => slot.role === "prompt");
+  const refs = slots.filter((slot) => slot.role === "reference_image").sort((a, b) => a.order - b.order);
+  const first = refs[0];
+  const second = refs[1];
+  const third = refs[2];
+  assert.ok(prompt && first && second && third);
+  assert.equal(store.connectToSlot(textId, id, prompt.id).ok, true);
+  assert.equal(store.connectToSlot(srcA, id, second.id).ok, true);
+  const promptEdge = Object.values(store.edgeMap()).find((edge) => edge.targetSlotId === prompt.id);
+  const refEdge = Object.values(store.edgeMap()).find((edge) => edge.targetSlotId === second.id);
+  assert.ok(promptEdge && refEdge);
+  const before = structuredClone(store.nodeMap()[id]?.slots);
+  assert.equal(store.reorderSlots(id, first.id, first.id), false);
+  assert.equal(store.reorderSlots(id, first.id, prompt.id), false);
+  assert.equal(store.reorderSlots(id, "missing", second.id), false);
+  assert.deepEqual(store.nodeMap()[id]?.slots, before);
+  assert.equal(store.edgeMap()[promptEdge.id]?.id, promptEdge.id);
+  assert.equal(store.edgeMap()[refEdge.id]?.targetSlotId, second.id);
+  const promptOrder = prompt.order;
+  const thirdOrder = third.order;
+  assert.equal(store.reorderSlots(id, first.id, second.id), true);
+  const after = store.nodeMap()[id]?.slots ?? [];
+  assert.equal(after.find((slot) => slot.id === prompt.id)?.order, promptOrder);
+  assert.equal(after.find((slot) => slot.id === third.id)?.order, thirdOrder);
+  assert.equal(after.find((slot) => slot.id === second.id)?.order, first.order);
+  assert.equal(after.find((slot) => slot.id === first.id)?.order, second.order);
+  assert.equal(store.edgeMap()[refEdge.id]?.id, refEdge.id);
+  assert.equal(store.edgeMap()[refEdge.id]?.targetSlotId, second.id);
+  assert.equal(after.find((slot) => slot.id === second.id)?.edgeId, refEdge.id);
+  assert.equal(store.edgeMap()[promptEdge.id]?.targetSlotId, prompt.id);
+  const body = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "EditorStore.ts"), "utf8");
+  const reorderAt = body.indexOf("reorderSlots(nodeId");
+  const fn = body.slice(reorderAt, body.indexOf("selectActiveVariant(", reorderAt));
+  assert.equal(fn.includes("order: to.order"), true);
+  assert.equal(fn.includes("order: from.order"), true);
+  assert.equal(fn.includes("reindexSlots"), true);
+  assert.equal(fn.includes("splice"), false);
+});
+
+test("只选中边时删除是断开连线；框选不选边；重做清空选择", () => {
+  const store = semanticStore();
+  const textId = store.addTextNode();
+  const genId = store.addGenerationNode("txt2img");
+  assert.ok(textId && genId);
+  const prompt = store.nodeMap()[genId]?.slots?.find((slot) => slot.role === "prompt");
+  assert.ok(prompt);
+  assert.equal(store.connectToSlot(textId, genId, prompt.id).ok, true);
+  const edge = Object.values(store.edgeMap())[0];
+  assert.ok(edge);
+  store.select([textId]);
+  store.select([textId], [edge.id]);
+  assert.deepEqual(store.getSnapshot().selectedIds, [textId]);
+  assert.deepEqual(store.getSnapshot().selectedEdgeIds, [edge.id]);
+  store.select([], [edge.id]);
+  assert.deepEqual(store.getSnapshot().selectedIds, []);
+  assert.deepEqual(store.getSnapshot().selectedEdgeIds, [edge.id]);
+  store.marqueeSelect([genId], false);
+  assert.deepEqual(store.getSnapshot().selectedEdgeIds, []);
+  assert.deepEqual(store.getSnapshot().selectedIds, [genId]);
+  store.select([], [edge.id]);
+  store.deleteSelection();
+  assert.equal(store.edgeMap()[edge.id], undefined);
+  assert.equal(store.nodeMap()[genId]?.slots?.find((slot) => slot.id === prompt.id)?.edgeId, null);
+  assert.ok(store.nodeMap()[textId]);
+  assert.ok(store.nodeMap()[genId]);
+  assert.deepEqual(store.getSnapshot().selectedIds, []);
+  assert.deepEqual(store.getSnapshot().selectedEdgeIds, []);
+  assert.equal(store.undo(), true);
+  assert.equal(store.edgeMap()[edge.id]?.targetSlotId, prompt.id);
+  assert.equal(store.nodeMap()[genId]?.slots?.find((slot) => slot.id === prompt.id)?.edgeId, edge.id);
+  assert.equal(store.redo(), true);
+  assert.equal(store.edgeMap()[edge.id], undefined);
+  assert.deepEqual(store.getSnapshot().selectedIds, []);
+  assert.deepEqual(store.getSnapshot().selectedEdgeIds, []);
+  const body = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "EditorStore.ts"), "utf8");
+  const deleteAt = body.indexOf("deleteSelection(): void");
+  const fn = body.slice(deleteAt, body.indexOf("connect(sourceNodeId", deleteAt));
+  assert.equal(fn.includes("断开连线"), true);
+  assert.equal(fn.includes("删除 ${nodeCount} 个节点"), true);
+  assert.equal(fn.includes("要连到槽上，已取消"), false);
+});
+
+test("Alt 复制并移动是一条命令；位移 0 或取消则复制不留；外延边不复制", () => {
+  const store = semanticStore();
+  const textId = store.addTextNode();
+  const genId = store.addGenerationNode("txt2img");
+  assert.ok(textId && genId);
+  const prompt = store.nodeMap()[genId]?.slots?.find((slot) => slot.role === "prompt");
+  assert.ok(prompt);
+  assert.equal(store.connectToSlot(textId, genId, prompt.id).ok, true);
+  const originX = store.nodeMap()[textId]?.x;
+  store.select([textId]);
+  const onlyText = store.stageAltDuplicate();
+  assert.equal(onlyText.length, 1);
+  assert.equal(Object.keys(store.edgeMap()).length, 1);
+  store.discardAltStage();
+  assert.equal(store.nodeMap()[onlyText[0] ?? ""], undefined);
+  assert.deepEqual(store.getSnapshot().selectedIds, [textId]);
+
+  store.select([textId, genId]);
+  const copied = store.stageAltDuplicate();
+  assert.equal(copied.length, 2);
+  assert.equal(Object.keys(store.edgeMap()).length, 2);
+  assert.equal(store.nodeMap()[textId]?.x, originX);
+  assert.equal(store.commitAltMove(0, 0), false);
+  assert.equal(store.nodeMap()[copied[0] ?? ""], undefined);
+  assert.equal(Object.keys(store.edgeMap()).length, 1);
+  assert.equal(store.getSnapshot().canUndo, true);
+
+  store.select([textId, genId]);
+  const again = store.stageAltDuplicate();
+  assert.equal(again.length, 2);
+  const undoBefore = store.getSnapshot().canUndo;
+  assert.equal(store.commitAltMove(15, 0), true);
+  assert.equal(store.nodeMap()[textId]?.x, originX);
+  const moved = again.map((id) => store.nodeMap()[id]).find((node) => node?.kind === "text");
+  assert.equal(moved?.x, (originX ?? 0) + 15);
+  assert.equal(store.getSnapshot().canUndo, true);
+  assert.equal(undoBefore, true);
+  store.undo();
+  assert.equal(store.nodeMap()[again[0] ?? ""], undefined);
+  assert.equal(store.nodeMap()[textId]?.x, originX);
+  assert.equal(Object.keys(store.edgeMap()).length, 1);
+});
+
+test("粘贴文本落在给定点；过长不建节点；一批导入错开 24 且一次撤销", () => {
+  const store = semanticStore();
+  assert.equal(store.addTextAt("x".repeat(TEXT_MAX_CHARS + 1), { x: 0, y: 0 }), null);
+  assert.equal(store.addTextAt("", { x: 0, y: 0 }), null);
+  const id = store.addTextAt("你好", { x: 100, y: 80 });
+  assert.ok(id);
+  const node = store.nodeMap()[id];
+  assert.equal(node?.text, "你好");
+  assert.equal(node?.x, 100 - 280 / 2);
+  assert.equal(node?.y, 80 - 180 / 2);
+  const media = fixtureImageMediaRef();
+  const ids = store.addImportedBatch([
+    { media, world: { x: 10, y: 20 } },
+    { media, world: { x: 10 + COPY_OFFSET, y: 20 + COPY_OFFSET } },
+  ]);
+  assert.equal(ids.length, 2);
+  assert.equal(store.nodeMap()[ids[1] ?? ""]?.x, store.nodeMap()[ids[0] ?? ""]!.x + COPY_OFFSET);
+  store.undo();
+  assert.equal(store.nodeMap()[ids[0] ?? ""], undefined);
+  assert.equal(store.nodeMap()[ids[1] ?? ""], undefined);
+  assert.equal(store.nodeMap()[id]?.text, "你好");
+});
+
+test("断开槽只去掉边；芯片挪到空槽或占用槽是一条命令，不兼容则不动", () => {
+  const store = semanticStore();
+  const textId = store.addTextNode();
+  const genId = store.addGenerationNode("reference");
+  const otherId = store.addGenerationNode("txt2img");
+  assert.ok(textId && genId && otherId);
+  assert.equal(store.addSlot(genId, "reference_image").ok, true);
+  const slots = store.nodeMap()[genId]?.slots ?? [];
+  const prompt = slots.find((slot) => slot.role === "prompt");
+  const refs = slots.filter((slot) => slot.role === "reference_image").sort((a, b) => a.order - b.order);
+  const first = refs[0];
+  const second = refs[1];
+  assert.ok(prompt && first && second);
+  assert.equal(store.connectToSlot(textId, genId, prompt.id).ok, true);
+  const edge = Object.values(store.edgeMap()).find((item) => item.targetSlotId === prompt.id);
+  assert.ok(edge);
+  assert.equal(store.disconnectSlot(genId, prompt.id), true);
+  assert.equal(store.edgeMap()[edge.id], undefined);
+  assert.equal(store.nodeMap()[genId]?.slots?.find((slot) => slot.id === prompt.id)?.edgeId, null);
+  assert.equal(store.nodeMap()[genId]?.slots?.some((slot) => slot.id === prompt.id), true);
+  store.undo();
+  assert.equal(store.edgeMap()[edge.id]?.targetSlotId, prompt.id);
+
+  assert.equal(store.injectSucceededVariants(otherId, [fixtureImageMediaRef()]), true);
+  assert.equal(store.connectToSlot(otherId, genId, first.id).ok, true);
+  const imageEdge = Object.values(store.edgeMap()).find((item) => item.targetSlotId === first.id);
+  assert.ok(imageEdge);
+  assert.equal(store.relocateSlotEdge(genId, first.id, genId, second.id).ok, true);
+  assert.equal(store.edgeMap()[imageEdge.id]?.id, imageEdge.id);
+  assert.equal(store.edgeMap()[imageEdge.id]?.targetSlotId, second.id);
+  assert.equal(store.nodeMap()[genId]?.slots?.find((slot) => slot.id === first.id)?.edgeId, null);
+  assert.equal(store.nodeMap()[genId]?.slots?.find((slot) => slot.id === second.id)?.edgeId, imageEdge.id);
+  store.undo();
+  assert.equal(store.edgeMap()[imageEdge.id]?.targetSlotId, first.id);
+
+  const thirdId = store.addGenerationNode("txt2img");
+  assert.ok(thirdId);
+  assert.equal(store.injectSucceededVariants(thirdId, [fixtureImageMediaRef()]), true);
+  assert.equal(store.connectToSlot(thirdId, genId, second.id).ok, true);
+  const occupied = Object.values(store.edgeMap()).find((item) => item.targetSlotId === second.id);
+  assert.ok(occupied);
+  const replaced = store.relocateSlotEdge(genId, first.id, genId, second.id);
+  assert.equal(replaced.ok, true);
+  if (replaced.ok) {
+    assert.equal(replaced.replace, true);
+  }
+  assert.equal(store.edgeMap()[occupied.id], undefined);
+  assert.equal(store.edgeMap()[imageEdge.id]?.targetSlotId, second.id);
+  assert.equal(store.nodeMap()[genId]?.slots?.find((slot) => slot.id === first.id)?.edgeId, null);
+  store.undo();
+  assert.equal(store.edgeMap()[occupied.id]?.targetSlotId, second.id);
+  assert.equal(store.edgeMap()[imageEdge.id]?.targetSlotId, first.id);
+
+  assert.equal(store.connectToSlot(textId, genId, prompt.id).ok, true);
+  const before = Object.keys(store.edgeMap()).length;
+  const mismatch = store.relocateSlotEdge(genId, prompt.id, genId, second.id);
+  assert.equal(mismatch.ok, false);
+  assert.equal(Object.keys(store.edgeMap()).length, before);
+  assert.equal(store.edgeMap()[imageEdge.id]?.targetSlotId, first.id);
+  assert.equal(store.nodeMap()[genId]?.slots?.find((slot) => slot.id === prompt.id)?.edgeId !== null, true);
+});
+
+
+

@@ -1,7 +1,102 @@
-import type { Camera } from "@canvas/schema";
+import { TEXT_MAX_CHARS, type Camera } from "@canvas/schema";
 import type { EditorStore } from "./EditorStore.ts";
 import { CAMERA_ANIM_MS, FIT_PADDING, ZOOM_MIN, ZOOM_MAX } from "./metrics.ts";
 import { clampZoom, type Size } from "./coords.ts";
+
+export type SlotKeyPlan = "reorder-up" | "reorder-down" | "disconnect" | "remove" | "delete-selection" | null;
+
+/** 焦点在槽行上时 Alt+方向重排，Delete 只断开，空槽 Backspace 才删槽。 */
+export function slotKeyPlan(input: {
+  key: string;
+  altKey: boolean;
+  slotFocused: boolean;
+  slotEmpty: boolean;
+}): SlotKeyPlan {
+  if (input.slotFocused) {
+    if (input.altKey && input.key === "ArrowUp") {
+      return "reorder-up";
+    }
+    if (input.altKey && input.key === "ArrowDown") {
+      return "reorder-down";
+    }
+    if (input.key === "Delete") {
+      return "disconnect";
+    }
+    if (input.key === "Backspace") {
+      return input.slotEmpty ? "remove" : null;
+    }
+    return null;
+  }
+  if (input.key === "Delete" || input.key === "Backspace") {
+    return "delete-selection";
+  }
+  return null;
+}
+
+export function adjacentSameRoleSlotId(
+  slots: readonly { id: string; role: string; order: number }[],
+  slotId: string,
+  direction: "up" | "down",
+): string | null {
+  const slot = slots.find((item) => item.id === slotId);
+  if (slot === undefined) {
+    return null;
+  }
+  const same = slots.filter((item) => item.role === slot.role).sort((a, b) => a.order - b.order);
+  const index = same.findIndex((item) => item.id === slotId);
+  if (index < 0) {
+    return null;
+  }
+  const next = same[index + (direction === "up" ? -1 : 1)];
+  return next?.id ?? null;
+}
+
+export function readFocusedSlot(target: EventTarget | null): { nodeId: string; slotId: string } | null {
+  if (!(target instanceof Element)) {
+    return null;
+  }
+  const row = target.closest(".node-slot");
+  if (!(row instanceof Element)) {
+    return null;
+  }
+  const slotId = row.getAttribute("data-slot-id");
+  const nodeId = row.closest("[data-node-id]")?.getAttribute("data-node-id") ?? null;
+  if (slotId === null || slotId === "" || nodeId === null || nodeId === "") {
+    return null;
+  }
+  return { nodeId, slotId };
+}
+
+export type SystemPastePlan = "yield" | "files" | "text" | "too-long" | "session";
+
+/**
+ * 输入框交给浏览器。有文件走导入。
+ * 会话里已经有复制的节点时，Ctrl+V 贴节点，不把系统剪贴板里的旧文字当成新文本。
+ * 没有会话副本时，不过长的 text/plain 才新建文本。
+ */
+export function planSystemPaste(input: {
+  inField: boolean;
+  fileCount: number;
+  text: string;
+  hasSessionClipboard: boolean;
+}): SystemPastePlan {
+  if (input.inField) {
+    return "yield";
+  }
+  if (input.fileCount > 0) {
+    return "files";
+  }
+  if (input.hasSessionClipboard) {
+    return "session";
+  }
+  if (input.text.length > TEXT_MAX_CHARS) {
+    return "too-long";
+  }
+  if (input.text.length > 0) {
+    return "text";
+  }
+  return "session";
+}
 
 function isEditable(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -185,11 +280,6 @@ export function attachShortcuts(input: {
       input.store.copySelection();
       return;
     }
-    if (ctrl && (event.key === "v" || event.key === "V")) {
-      event.preventDefault();
-      input.store.pasteClipboard();
-      return;
-    }
     if (ctrl && (event.key === "d" || event.key === "D")) {
       event.preventDefault();
       input.store.duplicateSelection();
@@ -216,7 +306,35 @@ export function attachShortcuts(input: {
       animateCamera(fitCamera());
       return;
     }
-    if (event.key === "Delete" || event.key === "Backspace") {
+    const focused = readFocusedSlot(event.target);
+    const focusedNode = focused !== null ? input.store.nodeMap()[focused.nodeId] : undefined;
+    const focusedSlot = focusedNode?.slots?.find((item) => item.id === focused?.slotId);
+    const plan = slotKeyPlan({
+      key: event.key,
+      altKey: event.altKey,
+      slotFocused: focused !== null,
+      slotEmpty: focusedSlot?.edgeId == null,
+    });
+    if (focused !== null && (plan === "reorder-up" || plan === "reorder-down")) {
+      event.preventDefault();
+      const slots = focusedNode?.slots ?? [];
+      const neighbor = adjacentSameRoleSlotId(slots, focused.slotId, plan === "reorder-up" ? "up" : "down");
+      if (neighbor !== null) {
+        input.store.reorderSlots(focused.nodeId, focused.slotId, neighbor);
+      }
+      return;
+    }
+    if (plan === "disconnect" && focused !== null) {
+      event.preventDefault();
+      input.store.disconnectSlot(focused.nodeId, focused.slotId);
+      return;
+    }
+    if (plan === "remove" && focused !== null) {
+      event.preventDefault();
+      input.store.removeSlot(focused.nodeId, focused.slotId);
+      return;
+    }
+    if (plan === "delete-selection") {
       event.preventDefault();
       input.store.deleteSelection();
     }

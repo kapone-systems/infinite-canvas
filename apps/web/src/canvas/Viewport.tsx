@@ -8,7 +8,7 @@ import { attachCanvasGestures, type LivePaint } from "./gestures.ts";
 import { lodBand, type LodBand } from "./lod.ts";
 import { MINIMAP_HEIGHT, MINIMAP_NODE_THRESHOLD, MINIMAP_WIDTH } from "./metrics.ts";
 import { minimapToWorld, paintMinimap } from "./Minimap.ts";
-import { applyMarqueeRect, Overlay } from "./Overlay.tsx";
+import { applyAlignGuides, applyMarqueeRect, Overlay } from "./Overlay.tsx";
 import { DevOverlay, type DevOverlayStats } from "./DevOverlay.tsx";
 import { attachShortcuts } from "./shortcuts.ts";
 
@@ -32,6 +32,7 @@ export function Viewport(props: {
   const gridRef = useRef<HTMLCanvasElement | null>(null);
   const edgeRef = useRef<HTMLCanvasElement>(null);
   const marqueeRef = useRef<HTMLDivElement | null>(null);
+  const guidesRef = useRef<HTMLDivElement | null>(null);
   const minimapRef = useRef<HTMLCanvasElement>(null);
   const edgePainter = useRef<EdgeCanvasRenderer | null>(null);
   const cameraRef = useRef(props.camera);
@@ -104,6 +105,7 @@ export function Viewport(props: {
         groups: Object.values(storeRef.current.groupMap()),
         mountedIds: mountedRef.current,
         selectedIds: selectedRef.current,
+        selectedEdgeIds: new Set(storeRef.current.getSnapshot().selectedEdgeIds),
         liveDelta: liveDeltaRef.current,
         straight: straightRef.current,
         connectLine: connectRef.current,
@@ -147,6 +149,10 @@ export function Viewport(props: {
         },
         applyMarquee: (rect) => {
           applyMarqueeRect(marqueeRef.current, rect);
+        },
+        applyGuides: (lines) => {
+          const size = sizeRef.current;
+          applyAlignGuides(guidesRef.current, lines, size.height, size.width);
         },
         classSelect: (ids) => {
           selectedRef.current = new Set(ids);
@@ -265,6 +271,7 @@ export function Viewport(props: {
       <Overlay
         selectedCount={props.selectedCount}
         marqueeRef={marqueeRef}
+        guidesRef={guidesRef}
         connectMessage={props.store.getSnapshot().lastConnectMessage}
       />
       {showMinimap ? (

@@ -27,6 +27,7 @@ export type EdgePaintInput = {
   groups: readonly ProjectGroup[];
   mountedIds: ReadonlySet<string>;
   selectedIds: ReadonlySet<string>;
+  selectedEdgeIds: ReadonlySet<string>;
   liveDelta: LiveDelta | null;
   straight: boolean;
   connectLine: { from: Point; to: Point } | null;
@@ -71,6 +72,18 @@ export function shouldPaintPlayTriangle(node: Pick<ProjectNode, "kind" | "output
     return true;
   }
   return node.kind === "generation" && node.outputKind === "video";
+}
+
+/** 选中的边用选中色和更粗的线，不另加 DOM。 */
+export function edgePaintStyle(input: {
+  selected: boolean;
+  straight: boolean;
+  roleStroke: string;
+}): { stroke: string; width: number } {
+  if (input.selected) {
+    return { stroke: SELECTED_STROKE, width: 3 };
+  }
+  return { stroke: input.roleStroke, width: input.straight ? 1 : 1.5 };
 }
 
 export type PlayTriangleCtx = {
@@ -190,25 +203,22 @@ export class EdgeCanvasRenderer {
       }
     }
 
-    ctx.lineWidth = input.straight ? 1 : 1.5;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
+    const plain: ProjectEdge[] = [];
+    const chosen: ProjectEdge[] = [];
     for (const edge of input.edges) {
-      const source = byId.get(edge.sourceNodeId);
-      const target = byId.get(edge.targetNodeId);
-      if (source === undefined || target === undefined) {
-        continue;
-      }
-      ctx.strokeStyle = SLOT_ROLE_STROKE[edge.role] ?? "#8ab4ff";
-      const from = worldToScreen(outputWorld(source, live), camera, viewport);
-      const slot = (target.slots ?? []).find((item) => item.id === edge.targetSlotId);
-      const order = slot?.order ?? 0;
-      const to = worldToScreen(slotWorld(target, order, live), camera, viewport);
-      if (input.straight) {
-        straight(ctx, from, to);
+      if (input.selectedEdgeIds.has(edge.id)) {
+        chosen.push(edge);
       } else {
-        bezier(ctx, from, to);
+        plain.push(edge);
       }
+    }
+    for (const edge of plain) {
+      this.strokeEdge(edge, byId, camera, viewport, live, input.straight, false);
+    }
+    for (const edge of chosen) {
+      this.strokeEdge(edge, byId, camera, viewport, live, input.straight, true);
     }
 
     if (input.connectLine !== null) {
@@ -218,6 +228,38 @@ export class EdgeCanvasRenderer {
       const to = worldToScreen(input.connectLine.to, camera, viewport);
       straight(ctx, from, to);
       ctx.setLineDash([]);
+    }
+  }
+
+  private strokeEdge(
+    edge: ProjectEdge,
+    byId: Map<string, ProjectNode>,
+    camera: Camera,
+    viewport: Size,
+    live: LiveDelta | null,
+    straightLine: boolean,
+    selected: boolean,
+  ): void {
+    const source = byId.get(edge.sourceNodeId);
+    const target = byId.get(edge.targetNodeId);
+    if (source === undefined || target === undefined) {
+      return;
+    }
+    const style = edgePaintStyle({
+      selected,
+      straight: straightLine,
+      roleStroke: SLOT_ROLE_STROKE[edge.role] ?? "#8ab4ff",
+    });
+    this.ctx.strokeStyle = style.stroke;
+    this.ctx.lineWidth = style.width;
+    const from = worldToScreen(outputWorld(source, live), camera, viewport);
+    const slot = (target.slots ?? []).find((item) => item.id === edge.targetSlotId);
+    const order = slot?.order ?? 0;
+    const to = worldToScreen(slotWorld(target, order, live), camera, viewport);
+    if (straightLine) {
+      straight(this.ctx, from, to);
+    } else {
+      bezier(this.ctx, from, to);
     }
   }
 

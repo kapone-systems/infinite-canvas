@@ -208,6 +208,12 @@ export class EditorStore {
     groups: Record<string, ProjectGroup>;
     selectedIds: string[];
   } | null = null;
+  private altStage: {
+    nodeIds: string[];
+    edgeIds: string[];
+    groupIds: string[];
+    selectBefore: string[];
+  } | null = null;
   private lastTextAt = 0;
   private lastTextKey: string | null = null;
   private cancelHook: ExecutionCancelHook | null;
@@ -760,7 +766,7 @@ export class EditorStore {
     return true;
   }
 
-  moveNodes(ids: readonly string[], dx: number, dy: number): void {
+  moveNodes(ids: readonly string[], dx: number, dy: number, snap = true): void {
     if (this.project === null) {
       return;
     }
@@ -768,19 +774,25 @@ export class EditorStore {
     if (movingIds.length === 0) {
       return;
     }
-    const movingRects = [];
-    const others = [];
-    const movingSet = new Set(movingIds);
-    for (const node of Object.values(this.project.nodes)) {
-      const rect = { id: node.id, x: node.x, y: node.y, width: node.width, height: node.height };
-      if (movingSet.has(node.id)) {
-        movingRects.push(rect);
-      } else {
-        others.push(rect);
+    let nextDx = dx;
+    let nextDy = dy;
+    if (snap) {
+      const movingRects = [];
+      const others = [];
+      const movingSet = new Set(movingIds);
+      for (const node of Object.values(this.project.nodes)) {
+        const rect = { id: node.id, x: node.x, y: node.y, width: node.width, height: node.height };
+        if (movingSet.has(node.id)) {
+          movingRects.push(rect);
+        } else {
+          others.push(rect);
+        }
       }
+      const snapped = snapWorldDelta(movingRects, others, dx, dy, this.camera.zoom);
+      nextDx = snapped.dx;
+      nextDy = snapped.dy;
     }
-    const snapped = snapWorldDelta(movingRects, others, dx, dy, this.camera.zoom);
-    if (snapped.dx === 0 && snapped.dy === 0) {
+    if (nextDx === 0 && nextDy === 0) {
       this.setGestureActive(false);
       return;
     }
@@ -793,7 +805,7 @@ export class EditorStore {
       moves.push({
         id,
         prev: { x: node.x, y: node.y },
-        next: { x: node.x + snapped.dx, y: node.y + snapped.dy },
+        next: { x: node.x + nextDx, y: node.y + nextDy },
       });
     }
     if (moves.length === 0) {
@@ -902,6 +914,10 @@ export class EditorStore {
     };
   }
 
+  hasSessionClipboard(): boolean {
+    return this.clipboard !== null && this.clipboard.selectedIds.length > 0;
+  }
+
   pasteClipboard(): string[] {
     if (this.project === null || this.clipboard === null) {
       return [];
@@ -915,6 +931,230 @@ export class EditorStore {
     }
     this.copySelection();
     return this.pasteClipboard();
+  }
+
+  /** Alt 拖：复制品与原来重合，先不入栈。取消时 discard。 */
+  stageAltDuplicate(): string[] {
+    if (this.project === null || this.altStage !== null) {
+      return [];
+    }
+    const selectBefore = [...this.selectedIds];
+    const cloned = cloneSubgraphForPaste({
+      nodes: this.project.nodes,
+      edges: this.project.edges,
+      groups: this.project.groups,
+      selectedIds: selectBefore,
+      idFactory: this.idFactory,
+      offset: { x: 0, y: 0 },
+    });
+    if (cloned.newNodeIds.length === 0) {
+      return [];
+    }
+    for (const node of Object.values(cloned.nodes)) {
+      this.project.nodes[node.id] = node;
+    }
+    for (const edge of Object.values(cloned.edges)) {
+      this.project.edges[edge.id] = edge;
+    }
+    for (const group of Object.values(cloned.groups)) {
+      this.project.groups[group.id] = group;
+    }
+    this.altStage = {
+      nodeIds: [...cloned.newNodeIds],
+      edgeIds: Object.keys(cloned.edges),
+      groupIds: Object.keys(cloned.groups),
+      selectBefore,
+    };
+    this.selectedIds = new Set(cloned.newNodeIds);
+    this.selectedEdgeIds = new Set();
+    this.rebuildSpatial();
+    this.emit();
+    return [...cloned.newNodeIds];
+  }
+
+  discardAltStage(): void {
+    if (this.project === null || this.altStage === null) {
+      return;
+    }
+    const stage = this.altStage;
+    this.altStage = null;
+    for (const id of stage.edgeIds) {
+      delete this.project.edges[id];
+    }
+    for (const id of stage.groupIds) {
+      delete this.project.groups[id];
+    }
+    for (const id of stage.nodeIds) {
+      delete this.project.nodes[id];
+    }
+    this.selectedIds = new Set(stage.selectBefore);
+    this.selectedEdgeIds = new Set();
+    this.rebuildSpatial();
+    this.emit();
+  }
+
+  /** 复制并移动合成一条命令。位移为 0 则复制也不留。 */
+  commitAltMove(dx: number, dy: number): boolean {
+    if (this.project === null || this.altStage === null) {
+      return false;
+    }
+    const stage = this.altStage;
+    const nodes = stage.nodeIds
+      .map((id) => this.project?.nodes[id])
+      .filter((node): node is ProjectNode => node !== undefined)
+      .map((node) => ({ ...structuredClone(node), x: node.x + dx, y: node.y + dy }));
+    const edges = stage.edgeIds
+      .map((id) => this.project?.edges[id])
+      .filter((edge): edge is ProjectEdge => edge !== undefined)
+      .map((edge) => structuredClone(edge));
+    const groups = stage.groupIds
+      .map((id) => this.project?.groups[id])
+      .filter((group): group is ProjectGroup => group !== undefined)
+      .map((group) => structuredClone(group));
+    this.altStage = null;
+    for (const id of stage.edgeIds) {
+      delete this.project.edges[id];
+    }
+    for (const id of stage.groupIds) {
+      delete this.project.groups[id];
+    }
+    for (const id of stage.nodeIds) {
+      delete this.project.nodes[id];
+    }
+    if (dx === 0 && dy === 0) {
+      this.selectedIds = new Set(stage.selectBefore);
+      this.selectedEdgeIds = new Set();
+      this.rebuildSpatial();
+      this.emit();
+      return false;
+    }
+    const redo: Op[] = [];
+    for (const node of nodes) {
+      redo.push({ op: "put-node", node });
+    }
+    for (const edge of edges) {
+      redo.push({ op: "put-edge", edge });
+    }
+    for (const group of groups) {
+      redo.push({ op: "put-group", group });
+    }
+    this.commit(
+      createHistoryEntry({
+        label: `移动 ${nodes.length} 个节点`,
+        redo,
+        selectAfterRedo: stage.nodeIds,
+        selectAfterUndo: stage.selectBefore,
+      }),
+    );
+    return true;
+  }
+
+  addTextAt(text: string, world: { x: number; y: number }): string | null {
+    if (this.project === null || text.length === 0 || isTextOverLimit(text)) {
+      return null;
+    }
+    const id = this.idFactory();
+    const serial = textNodeCount(this.project.nodes) + 1;
+    const node = createAuthoredTextNode({
+      id,
+      title: `${COPY.textKindLabel} ${serial}`,
+      x: world.x - DEFAULT_NODE_SIZE.text.width / 2,
+      y: world.y - DEFAULT_NODE_SIZE.text.height / 2,
+      z: maxNodeZ(this.project.nodes) + 1,
+      now: this.now(),
+      text,
+    });
+    this.commit(
+      createHistoryEntry({
+        label: "添加文本节点",
+        redo: [{ op: "put-node", node }],
+        selectAfterRedo: [id],
+        selectAfterUndo: [...this.selectedIds],
+      }),
+    );
+    return id;
+  }
+
+  addImportedBatch(
+    items: readonly { media: MediaRef; world: { x: number; y: number } }[],
+  ): string[] {
+    if (this.project === null || items.length === 0) {
+      return [];
+    }
+    const redo: Op[] = [];
+    const ids: string[] = [];
+    let imageSerial = 0;
+    let videoSerial = 0;
+    let audioSerial = 0;
+    for (const node of Object.values(this.project.nodes)) {
+      if (node.origin !== "imported") {
+        continue;
+      }
+      if (node.kind === "image") {
+        imageSerial += 1;
+      } else if (node.kind === "video") {
+        videoSerial += 1;
+      } else if (node.kind === "audio") {
+        audioSerial += 1;
+      }
+    }
+    let z = maxNodeZ(this.project.nodes);
+    for (const item of items) {
+      const id = this.idFactory();
+      z += 1;
+      let node: ProjectNode | null = null;
+      if (item.media.kind === "image") {
+        imageSerial += 1;
+        node = createImportedImageNode({
+          id,
+          title: `${MEDIA_KIND_LABELS.image} ${imageSerial}`,
+          x: item.world.x - DEFAULT_NODE_SIZE.image.width / 2,
+          y: item.world.y - DEFAULT_NODE_SIZE.image.minHeight / 2,
+          z,
+          now: this.now(),
+          media: item.media,
+        });
+      } else if (item.media.kind === "video") {
+        videoSerial += 1;
+        node = createImportedVideoNode({
+          id,
+          title: `${MEDIA_KIND_LABELS.video} ${videoSerial}`,
+          x: item.world.x - DEFAULT_NODE_SIZE.video.width / 2,
+          y: item.world.y - DEFAULT_NODE_SIZE.video.minHeight / 2,
+          z,
+          now: this.now(),
+          media: item.media,
+        });
+      } else if (item.media.kind === "audio") {
+        audioSerial += 1;
+        node = createImportedAudioNode({
+          id,
+          title: `${MEDIA_KIND_LABELS.audio} ${audioSerial}`,
+          x: item.world.x - DEFAULT_NODE_SIZE.audio.width / 2,
+          y: item.world.y - DEFAULT_NODE_SIZE.audio.height / 2,
+          z,
+          now: this.now(),
+          media: item.media,
+        });
+      }
+      if (node === null) {
+        continue;
+      }
+      redo.push({ op: "put-node", node });
+      ids.push(id);
+    }
+    if (redo.length === 0) {
+      return [];
+    }
+    this.commit(
+      createHistoryEntry({
+        label: ids.length === 1 ? "导入文件" : `导入 ${ids.length} 个文件`,
+        redo,
+        selectAfterRedo: ids,
+        selectAfterUndo: [...this.selectedIds],
+      }),
+    );
+    return ids;
   }
 
   deleteSelection(): void {
@@ -953,6 +1193,28 @@ export class EditorStore {
         redo.push({ op: "drop-edge", id: edge.id, edge: structuredClone(edge) });
         droppedEdges.add(edge.id);
       }
+    }
+    const clearByNode = new Map<string, Set<string>>();
+    for (const edgeId of droppedEdges) {
+      const edge = this.project.edges[edgeId];
+      if (edge === undefined || nodeIds.has(edge.targetNodeId)) {
+        continue;
+      }
+      const slots = clearByNode.get(edge.targetNodeId) ?? new Set<string>();
+      slots.add(edge.targetSlotId);
+      clearByNode.set(edge.targetNodeId, slots);
+    }
+    for (const [targetId, slotIds] of clearByNode) {
+      const target = this.project.nodes[targetId];
+      if (target?.slots === undefined) {
+        continue;
+      }
+      redo.push({
+        op: "set",
+        path: `nodes.${targetId}.slots`,
+        value: target.slots.map((item) => (slotIds.has(item.id) ? { ...item, edgeId: null } : item)),
+        prev: structuredClone(target.slots),
+      });
     }
     for (const id of nodeIds) {
       const node = this.project.nodes[id];
@@ -1004,6 +1266,133 @@ export class EditorStore {
         selectAfterUndo: [...this.selectedIds],
       }),
     );
+  }
+
+  disconnectSlot(nodeId: string, slotId: string): boolean {
+    if (this.project === null) {
+      return false;
+    }
+    const node = this.project.nodes[nodeId];
+    if (node === undefined || node.slots === undefined) {
+      return false;
+    }
+    const slot = node.slots.find((item) => item.id === slotId);
+    if (slot === undefined || slot.edgeId === null) {
+      return false;
+    }
+    const edge = this.project.edges[slot.edgeId];
+    const redo: Op[] = [];
+    if (edge !== undefined) {
+      redo.push({ op: "drop-edge", id: edge.id, edge: structuredClone(edge) });
+    }
+    redo.push({
+      op: "set",
+      path: `nodes.${nodeId}.slots`,
+      value: node.slots.map((item) => (item.id === slotId ? { ...item, edgeId: null } : item)),
+      prev: structuredClone(node.slots),
+    });
+    redo.push(...this.staleOps(nodeId, true));
+    this.commit(
+      createHistoryEntry({
+        label: "断开连线",
+        redo,
+        selectAfterRedo: [nodeId],
+        selectAfterUndo: [...this.selectedIds],
+      }),
+    );
+    return true;
+  }
+
+  /** 芯片拖到另一个槽：同一条边改目标。目标已占用则替换。一条命令。 */
+  relocateSlotEdge(fromNodeId: string, fromSlotId: string, toNodeId: string, toSlotId: string): ConnectResult {
+    if (this.project === null) {
+      return this.rejectConnect(USER_FACING.connectToBlank);
+    }
+    if (fromNodeId === toNodeId && fromSlotId === toSlotId) {
+      return { ok: false, message: USER_FACING.connectToBlank };
+    }
+    const fromNode = this.project.nodes[fromNodeId];
+    const fromSlot = fromNode?.slots?.find((item) => item.id === fromSlotId);
+    if (fromNode === undefined || fromSlot === undefined || fromSlot.edgeId === null) {
+      return this.rejectConnect(USER_FACING.connectToBlank);
+    }
+    const edge = this.project.edges[fromSlot.edgeId];
+    if (edge === undefined) {
+      return this.rejectConnect(USER_FACING.connectToBlank);
+    }
+    const evaluation = evaluateConnect({
+      nodes: this.project.nodes,
+      edges: this.project.edges,
+      sourceNodeId: edge.sourceNodeId,
+      target: { type: "slot", nodeId: toNodeId, slotId: toSlotId },
+    });
+    if (!evaluation.ok) {
+      return this.rejectConnect(evaluation.message);
+    }
+    const toNode = this.project.nodes[toNodeId];
+    const toSlot = toNode?.slots?.find((item) => item.id === toSlotId);
+    if (toNode === undefined || toNode.slots === undefined || toSlot === undefined) {
+      return this.rejectConnect(USER_FACING.connectToBlank);
+    }
+    const redo: Op[] = [{ op: "drop-edge", id: edge.id, edge: structuredClone(edge) }];
+    if (toSlot.edgeId !== null && toSlot.edgeId !== edge.id) {
+      const replaced = this.project.edges[toSlot.edgeId];
+      if (replaced !== undefined) {
+        redo.push({ op: "drop-edge", id: replaced.id, edge: structuredClone(replaced) });
+      }
+    }
+    const moved: ProjectEdge = {
+      ...structuredClone(edge),
+      targetNodeId: toNodeId,
+      targetSlotId: toSlotId,
+      role: toSlot.role,
+    };
+    redo.push({ op: "put-edge", edge: moved });
+    if (fromNodeId === toNodeId && fromNode.slots !== undefined) {
+      redo.push({
+        op: "set",
+        path: `nodes.${fromNodeId}.slots`,
+        value: fromNode.slots.map((item) => {
+          if (item.id === fromSlotId) {
+            return { ...item, edgeId: null };
+          }
+          if (item.id === toSlotId) {
+            return { ...item, edgeId: edge.id };
+          }
+          return item;
+        }),
+        prev: structuredClone(fromNode.slots),
+      });
+    } else {
+      if (fromNode.slots !== undefined) {
+        redo.push({
+          op: "set",
+          path: `nodes.${fromNodeId}.slots`,
+          value: fromNode.slots.map((item) => (item.id === fromSlotId ? { ...item, edgeId: null } : item)),
+          prev: structuredClone(fromNode.slots),
+        });
+      }
+      redo.push({
+        op: "set",
+        path: `nodes.${toNodeId}.slots`,
+        value: toNode.slots.map((item) => (item.id === toSlotId ? { ...item, edgeId: edge.id } : item)),
+        prev: structuredClone(toNode.slots),
+      });
+    }
+    redo.push(...this.staleOps(fromNodeId, true));
+    if (toNodeId !== fromNodeId) {
+      redo.push(...this.staleOps(toNodeId, true));
+    }
+    this.lastConnectMessage = null;
+    this.commit(
+      createHistoryEntry({
+        label: evaluation.replace ? "更换槽上的连线" : "移动连线",
+        redo,
+        selectAfterRedo: [edge.sourceNodeId, toNodeId],
+        selectAfterUndo: [...this.selectedIds],
+      }),
+    );
+    return evaluation;
   }
 
   connect(sourceNodeId: string, target: ConnectTarget): ConnectResult {

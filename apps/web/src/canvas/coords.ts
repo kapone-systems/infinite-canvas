@@ -63,8 +63,35 @@ export function panByScreenDelta(camera: Camera, dx: number, dy: number): Camera
   };
 }
 
-function wheelFactor(deltaY: number): number {
-  return deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR;
+/** 像素模式里，大约这么多像素算鼠标一行。 */
+export const WHEEL_PIXELS_PER_LINE = 100;
+/** 单次滚轮事件的指数绝对值上限。一行大约仍是 WHEEL_ZOOM_FACTOR。 */
+export const WHEEL_EXPONENT_CAP = 1;
+
+/**
+ * 负 deltaY 放大。行模式（deltaMode 1）的 1 行、像素模式大约 100 像素，都是 WHEEL_ZOOM_FACTOR。
+ * 像素按比例缩小；单次指数不超过 WHEEL_EXPONENT_CAP。
+ */
+export function wheelFactor(deltaY: number, deltaMode = 0): number {
+  const notches = wheelNotches(deltaY, deltaMode);
+  if (notches === 0) {
+    return 1;
+  }
+  const capped = Math.sign(notches) * Math.min(Math.abs(notches), WHEEL_EXPONENT_CAP);
+  return Math.pow(WHEEL_ZOOM_FACTOR, -capped);
+}
+
+function wheelNotches(deltaY: number, deltaMode: number): number {
+  if (!Number.isFinite(deltaY) || deltaY === 0) {
+    return 0;
+  }
+  if (deltaMode === 1) {
+    return deltaY;
+  }
+  if (deltaMode === 2) {
+    return deltaY * (WHEEL_EXPONENT_CAP + 1);
+  }
+  return deltaY / WHEEL_PIXELS_PER_LINE;
 }
 
 /**
@@ -76,9 +103,10 @@ export function zoomAtPointer(
   pointer: Point,
   viewport: Size,
   deltaY: number,
+  deltaMode = 0,
 ): Camera {
   const world = screenToWorld(pointer, camera, viewport);
-  const zoom = clampZoom(camera.zoom * wheelFactor(deltaY));
+  const zoom = clampZoom(camera.zoom * wheelFactor(deltaY, deltaMode));
   if (zoom === camera.zoom) {
     return camera;
   }
@@ -90,11 +118,11 @@ export function zoomAtPointer(
 }
 
 /** 仅 Ctrl+0 一类「中心不变」路径使用。滚轮不要走这里。 */
-export function zoomAtCenter(camera: Camera, deltaY: number): Camera {
+export function zoomAtCenter(camera: Camera, deltaY: number, deltaMode = 0): Camera {
   return {
     x: camera.x,
     y: camera.y,
-    zoom: clampZoom(camera.zoom * wheelFactor(deltaY)),
+    zoom: clampZoom(camera.zoom * wheelFactor(deltaY, deltaMode)),
   };
 }
 

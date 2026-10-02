@@ -216,6 +216,8 @@ function SlotRow(props: {
   const title = slotTitle(props.slots, props.slot);
   const index = roleDisplayIndex(props.slots, props.slot);
   const connected = props.slot.edgeId !== null;
+  const edge = props.slot.edgeId !== null ? props.edges[props.slot.edgeId] : undefined;
+  const sourceTitle = edge !== undefined ? props.nodes[edge.sourceNodeId]?.title ?? "" : "";
   const media = resolveSlotMedia(props.slot, props.nodes, props.edges);
   let hint = "";
   if (!connected) {
@@ -231,6 +233,7 @@ function SlotRow(props: {
       data-slot-id={props.slot.id}
       data-slot-role={props.slot.role}
       data-slot-index={String(index)}
+      tabIndex={0}
       style={{ height: SLOT_ROW }}
     >
       <span
@@ -246,6 +249,11 @@ function SlotRow(props: {
         aria-hidden="true"
       />
       <span className="node-slot-label">{title}</span>
+      {connected && edge !== undefined ? (
+        <span className="node-slot-chip" data-slot-chip={props.slot.id} title={sourceTitle}>
+          {sourceTitle}
+        </span>
+      ) : null}
       {hint !== "" ? <span className="node-slot-hint">{hint}</span> : null}
     </div>
   );

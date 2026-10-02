@@ -3,6 +3,7 @@ import {
   camerasEqual,
   panByScreenDelta,
   screenToWorld,
+  worldToScreen,
   zoomAtPointer,
   type Point,
   type Size,
@@ -14,9 +15,13 @@ import {
   CONNECT_BOUNCE_MS,
   EXTRACT_GHOST_SCALE,
   EXTRACT_LEAVE_PX,
+  AUTO_PAN_EDGE_PX,
   POINTER_THRESHOLD_PX,
+  REORDER_SHIFT_MS,
+  SLOT_ROW,
   VIEWPORT_PUT_IDLE_MS,
 } from "./metrics.ts";
+import { snapWorldDelta, type SnapGuide, type SnapRect } from "./snap.ts";
 import {
   hitTest,
   marqueeHitsNode,
@@ -32,6 +37,96 @@ export function exceededThreshold(dx: number, dy: number, threshold = POINTER_TH
   return dx * dx + dy * dy >= threshold * threshold;
 }
 
+/** Shift：先锁到水平或垂直里较大的那一轴。 */
+export function axisLockedDelta(dx: number, dy: number, shift: boolean): { dx: number; dy: number } {
+  if (!shift) {
+    return { dx, dy };
+  }
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return { dx, dy: 0 };
+  }
+  return { dx: 0, dy };
+}
+
+/** 锁轴之后再吸附。未锁的那一轴不再被吸附拉开。 */
+export function resolveMoveDelta(input: {
+  dx: number;
+  dy: number;
+  shift: boolean;
+  moving: readonly SnapRect[];
+  others: readonly SnapRect[];
+  zoom: number;
+}): { dx: number; dy: number; guides: SnapGuide[] } {
+  const locked = axisLockedDelta(input.dx, input.dy, input.shift);
+  const snapped = snapWorldDelta(input.moving, input.others, locked.dx, locked.dy, input.zoom);
+  if (!input.shift) {
+    return snapped;
+  }
+  if (locked.dy === 0) {
+    return { dx: snapped.dx, dy: 0, guides: snapped.guides.filter((guide) => guide.axis === "x") };
+  }
+  return { dx: 0, dy: snapped.dy, guides: snapped.guides.filter((guide) => guide.axis === "y") };
+}
+
+/**
+ * 指针进视口边缘时相机朝该方向移。越靠边越快，最快每帧 max 屏幕像素。
+ * 返回值交给 panByScreenDelta：左/上为正。
+ */
+export function autoPanScreenDelta(
+  screen: Point,
+  viewport: Size,
+  edge = AUTO_PAN_EDGE_PX,
+  max = AUTO_PAN_EDGE_PX,
+): Point {
+  const speed = (dist: number): number => {
+    if (!(dist < edge)) {
+      return 0;
+    }
+    return Math.min(max, ((edge - dist) / edge) * max);
+  };
+  let dx = 0;
+  let dy = 0;
+  if (screen.x < edge) {
+    dx = speed(Math.max(0, screen.x));
+  } else if (screen.x > viewport.width - edge) {
+    dx = -speed(Math.max(0, viewport.width - screen.x));
+  }
+  if (screen.y < edge) {
+    dy = speed(Math.max(0, screen.y));
+  } else if (screen.y > viewport.height - edge) {
+    dy = -speed(Math.max(0, viewport.height - screen.y));
+  }
+  return { x: dx, y: dy };
+}
+
+/** 标题、非文本节点、远景色块、分组可以拖。文本正文不行。 */
+export function canDragNodeBody(input: {
+  hitKind: string;
+  nodeKind?: string | null;
+  inHeader: boolean;
+}): boolean {
+  if (input.hitKind === "far-block" || input.hitKind === "group") {
+    return true;
+  }
+  if (input.hitKind !== "near-node") {
+    return false;
+  }
+  if (input.inHeader) {
+    return true;
+  }
+  return input.nodeKind != null && input.nodeKind !== "text";
+}
+
+/** 双击文本预览才编辑。标题和远景色块不进入编辑。 */
+export function shouldStartTextEdit(input: {
+  detail: number;
+  hitKind: string;
+  nodeKind?: string | null;
+  inHeader: boolean;
+}): boolean {
+  return input.detail >= 2 && input.hitKind === "near-node" && input.nodeKind === "text" && !input.inHeader;
+}
+
 export function wheelShouldZoom(input: {
   composing: boolean;
   editable: boolean;
@@ -40,13 +135,150 @@ export function wheelShouldZoom(input: {
   return !input.viewerOpen && !input.composing && !input.editable;
 }
 
+export type WheelGestureAction = "yield" | "ignore" | "zoom";
+
+/**
+ * textarea / input，或已经溢出的变体条：交给浏览器滚，不缩放。
+ * 变体条没溢出则缩放（条内按钮不算可编辑拦截）。组字中、查看器打开仍拒绝。
+ */
+export function wheelAction(input: {
+  inTextField: boolean;
+  inVariantStrip: boolean;
+  stripOverflows: boolean;
+  composing: boolean;
+  editable: boolean;
+  viewerOpen: boolean;
+}): WheelGestureAction {
+  if (input.inTextField || (input.inVariantStrip && input.stripOverflows)) {
+    return "yield";
+  }
+  if (
+    !wheelShouldZoom({
+      composing: input.composing,
+      editable: input.inVariantStrip ? false : input.editable,
+      viewerOpen: input.viewerOpen,
+    })
+  ) {
+    return "ignore";
+  }
+  return "zoom";
+}
+
+export type DomLike = {
+  closest(selector: string): DomLike | null;
+  getAttribute(name: string): string | null;
+};
+
+function asDom(value: unknown): DomLike | null {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  if (!("closest" in value) || !("getAttribute" in value)) {
+    return null;
+  }
+  if (typeof value.closest !== "function" || typeof value.getAttribute !== "function") {
+    return null;
+  }
+  return value as DomLike;
+}
+
+/** 先 data-slot-handle，空了再 data-slot-id。不是握把（槽行、标签）返回 null。 */
+export function readSlotHandleTarget(el: unknown): { nodeId: string; slotId: string } | null {
+  const start = asDom(el);
+  if (start === null) {
+    return null;
+  }
+  const handle = asDom(start.closest("[data-slot-handle]"));
+  if (handle === null) {
+    return null;
+  }
+  const nodeEl = asDom(handle.closest("[data-node-id]"));
+  const rawHandle = handle.getAttribute("data-slot-handle");
+  const rawId = handle.getAttribute("data-slot-id");
+  const slotId = rawHandle !== null && rawHandle !== "" ? rawHandle : rawId;
+  const nodeId = nodeEl?.getAttribute("data-node-id") ?? null;
+  if (slotId === null || slotId === "" || nodeId === null || nodeId === "") {
+    return null;
+  }
+  return { nodeId, slotId };
+}
+
+/** 源变体条：命中 [data-variant-strip] 或 .variant-strip，节点 id 读祖先 data-node-id。 */
+export function readVariantStripNodeId(el: unknown): string | null {
+  const start = asDom(el);
+  if (start === null) {
+    return null;
+  }
+  const strip = asDom(start.closest("[data-variant-strip], .variant-strip"));
+  if (strip === null) {
+    return null;
+  }
+  const nodeEl = asDom(strip.closest("[data-node-id]"));
+  const nodeId = nodeEl?.getAttribute("data-node-id") ?? null;
+  if (nodeId === null || nodeId === "") {
+    return null;
+  }
+  return nodeId;
+}
+
+export const EXTRACT_MISSED_SLOT = "没有落到槽上，已取消";
+
+/** 落回源变体条，或落在节点身上但没进槽：不建节点，给这句。槽和空白不走这里。 */
+export function extractDropFeedback(input: {
+  commit: ExtractCommit;
+  dropOnSourceStrip: boolean;
+  hitKind: string;
+}): string | null {
+  if (input.commit.action !== "none") {
+    return null;
+  }
+  if (input.dropOnSourceStrip || input.hitKind === "near-node" || input.hitKind === "far-block") {
+    return EXTRACT_MISSED_SLOT;
+  }
+  return null;
+}
+
+/**
+ * 同一节点、同一角色、另一个握把，且 buildHit 也是这个槽，才重排。
+ * 自己、跨节点、角色不同、或不是握把，都不调用 reorderSlots。
+ */
+export function decideReorderCommit(input: {
+  fromNodeId: string;
+  fromSlotId: string;
+  handleNodeId: string | null;
+  handleSlotId: string | null;
+  hitKind: string;
+  hitNodeId: string | null;
+  hitSlotId: string | null;
+  fromRole: string | undefined;
+  toRole: string | undefined;
+}): boolean {
+  if (input.handleNodeId === null || input.handleSlotId === null) {
+    return false;
+  }
+  if (input.handleNodeId !== input.fromNodeId) {
+    return false;
+  }
+  if (input.handleSlotId === input.fromSlotId) {
+    return false;
+  }
+  if (input.hitKind !== "slot" || input.hitNodeId !== input.handleNodeId || input.hitSlotId !== input.handleSlotId) {
+    return false;
+  }
+  if (input.fromRole === undefined || input.toRole === undefined || input.fromRole !== input.toRole) {
+    return false;
+  }
+  return true;
+}
+
 export function applyWheelZoom(
   camera: Camera,
   pointer: Point,
   viewport: Size,
   deltaY: number,
+  deltaMode = 0,
 ): Camera {
-  return zoomAtPointer(camera, pointer, viewport, deltaY);
+  return zoomAtPointer(camera, pointer, viewport, deltaY, deltaMode);
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -69,6 +301,7 @@ export type GestureView = {
   getSize: () => Size;
   applyLive: (paint: LivePaint) => void;
   applyMarquee: (rect: { x: number; y: number; width: number; height: number } | null) => void;
+  applyGuides: (lines: { axis: "x" | "y"; pos: number }[] | null) => void;
   classSelect: (ids: ReadonlySet<string>) => void;
   host: HTMLElement;
 };
@@ -129,6 +362,32 @@ export function decideExtractCommit(input: {
   return { action: "none" };
 }
 
+/** 芯片拖走：空白才断开；另一个槽才挪边。同一槽和其他部位都不改文档。 */
+export function decideChipDrop(input: {
+  fromNodeId: string;
+  fromSlotId: string;
+  hitKind: string;
+  hitNodeId?: string | null;
+  hitSlotId?: string | null;
+}): "disconnect" | "move" | "none" {
+  if (
+    input.hitKind === "slot" &&
+    input.hitNodeId != null &&
+    input.hitNodeId !== "" &&
+    input.hitSlotId != null &&
+    input.hitSlotId !== ""
+  ) {
+    if (input.hitNodeId === input.fromNodeId && input.hitSlotId === input.fromSlotId) {
+      return "none";
+    }
+    return "move";
+  }
+  if (input.hitKind === "empty") {
+    return "disconnect";
+  }
+  return "none";
+}
+
 type Pending = {
   kind: "pending" | "pan" | "move" | "marquee" | "connect" | "extract" | "reorder-slot";
   pointerId: number;
@@ -149,6 +408,8 @@ type Pending = {
     scrolled: boolean;
   } | null;
   reorderFrom: { nodeId: string; slotId: string } | null;
+  chipFrom: { nodeId: string; slotId: string } | null;
+  altCopied: boolean;
 };
 
 export function attachCanvasGestures(options: GestureSessionOptions): GestureSession {
@@ -159,6 +420,7 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
   let liveCamera: Camera = store.getSnapshot().camera;
   let wheelTimer: number | null = null;
   let raf = 0;
+  let panRaf = 0;
   let pendingPoint: Point | null = null;
   let bounceTimer: number | null = null;
   let ghostEl: HTMLElement | null = null;
@@ -270,6 +532,8 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
       connectFrom: null,
       extractFrom: null,
       reorderFrom: null,
+      altCopied: false,
+      chipFrom: null,
     };
     liveCamera = store.getSnapshot().camera;
     el.classList.add("is-panning", "is-pan");
@@ -298,7 +562,7 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
     if (targetEl?.closest("[data-add-slot]") !== null) {
       return;
     }
-    if (isEditableTarget(event.target) || options.isTextEditing()) {
+    if (isEditableTarget(event.target)) {
       return;
     }
     liveCamera = store.getSnapshot().camera;
@@ -334,6 +598,8 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
             scrolled: false,
           },
           reorderFrom: null,
+      altCopied: false,
+      chipFrom: null,
         };
         el.setPointerCapture(event.pointerId);
         return;
@@ -371,6 +637,44 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
           connectFrom: null,
           extractFrom: null,
           reorderFrom: { nodeId, slotId },
+          altCopied: false,
+          chipFrom: null,
+        };
+        el.setPointerCapture(event.pointerId);
+        return;
+      }
+    }
+
+    const chipEl = targetEl?.closest("[data-slot-chip]");
+    if (chipEl instanceof HTMLElement) {
+      const nodeEl = chipEl.closest("[data-node-id]");
+      const nodeId = nodeEl?.getAttribute("data-node-id");
+      const slotId = chipEl.getAttribute("data-slot-chip");
+      const row = chipEl.closest(".node-slot");
+      if (row instanceof HTMLElement) {
+        row.focus();
+      }
+      const node = nodeId != null ? store.nodeMap()[nodeId] : undefined;
+      const slot = node?.slots?.find((item) => item.id === slotId);
+      if (nodeId != null && slotId != null && slot !== undefined && slot.edgeId !== null) {
+        event.preventDefault();
+        store.setGestureActive(true, "pending");
+        active = {
+          kind: "pending",
+          pointerId: event.pointerId,
+          startScreen: screen,
+          lastScreen: screen,
+          startWorld: screenToWorld(screen, cameraNow(), view.getSize()),
+          hit: { kind: "slot", nodeId, slotId },
+          moveIds: [],
+          origins: new Map(),
+          alt: event.altKey,
+          shift: event.shiftKey,
+          connectFrom: { nodeId, slotId, output: false, slotOrder: slot.order },
+          extractFrom: null,
+          reorderFrom: null,
+          altCopied: false,
+          chipFrom: { nodeId, slotId },
         };
         el.setPointerCapture(event.pointerId);
         return;
@@ -378,16 +682,30 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
     }
 
     const hit = buildHit(screen, false);
-    if (event.detail >= 2 && (hit.kind === "near-node" || hit.kind === "far-block")) {
-      const node = store.nodeMap()[hit.nodeId];
-      if (node?.kind === "text") {
-        options.onStartTextEdit(node.id);
-        event.preventDefault();
-        return;
-      }
+    const hitNode = hit.kind === "near-node" || hit.kind === "far-block" ? store.nodeMap()[hit.nodeId] : undefined;
+    const inHeader =
+      hitNode !== undefined &&
+      screenToWorld(screen, cameraNow(), view.getSize()).y < hitNode.y + HEADER;
+    if (
+      shouldStartTextEdit({
+        detail: event.detail,
+        hitKind: hit.kind,
+        nodeKind: hitNode?.kind,
+        inHeader,
+      })
+    ) {
+      options.onStartTextEdit(hitNode!.id);
+      event.preventDefault();
+      return;
     }
 
     if (hit.kind === "output" || hit.kind === "slot") {
+      if (hit.kind === "slot") {
+        const row = targetEl?.closest(".node-slot");
+        if (row instanceof HTMLElement) {
+          row.focus();
+        }
+      }
       event.preventDefault();
       store.setGestureActive(true, "connect");
       const fromNode = store.nodeMap()[hit.nodeId];
@@ -412,6 +730,8 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
             : { nodeId: hit.nodeId, slotId: hit.slotId, output: false, slotOrder },
         extractFrom: null,
         reorderFrom: null,
+      altCopied: false,
+      chipFrom: null,
       };
       el.setPointerCapture(event.pointerId);
       return;
@@ -432,14 +752,16 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
       const selected = new Set(store.getSnapshot().selectedIds);
       view.classSelect(selected);
       const node = hit.kind === "group" ? undefined : store.nodeMap()[hit.nodeId];
-      const inHeader =
+      const header =
         node !== undefined &&
         screenToWorld(screen, cameraNow(), view.getSize()).y < node.y + HEADER;
-      const textPreview =
-        node?.kind === "text" && hit.kind === "near-node" && !inHeader;
-      const moveIds = textPreview
-        ? []
-        : expandSelectionToNodes(store.nodeMap(), store.groupMap(), [...store.getSnapshot().selectedIds]);
+      const moveIds = canDragNodeBody({
+        hitKind: hit.kind,
+        nodeKind: node?.kind,
+        inHeader: header,
+      })
+        ? expandSelectionToNodes(store.nodeMap(), store.groupMap(), [...store.getSnapshot().selectedIds])
+        : [];
       const origins = new Map<string, { x: number; y: number }>();
       for (const id of moveIds) {
         const n = store.nodeMap()[id];
@@ -462,6 +784,8 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
         connectFrom: null,
         extractFrom: null,
         reorderFrom: null,
+      altCopied: false,
+      chipFrom: null,
       };
       el.setPointerCapture(event.pointerId);
       paint({ camera: liveCamera, straight: true, liveDelta: null });
@@ -484,8 +808,60 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
       connectFrom: null,
       extractFrom: null,
       reorderFrom: null,
+      altCopied: false,
+      chipFrom: null,
     };
     el.setPointerCapture(event.pointerId);
+  };
+
+  const guideScreen = (guides: readonly SnapGuide[]): { axis: "x" | "y"; pos: number }[] => {
+    const size = view.getSize();
+    return guides.map((guide) => {
+      const screen = worldToScreen({ x: guide.world, y: guide.world }, cameraNow(), size);
+      return { axis: guide.axis, pos: guide.axis === "x" ? screen.x : screen.y };
+    });
+  };
+
+  const movingRects = (gesture: Pending): { moving: SnapRect[]; others: SnapRect[] } => {
+    const moving: SnapRect[] = [];
+    const others: SnapRect[] = [];
+    const ids = new Set(gesture.moveIds);
+    for (const node of Object.values(store.nodeMap())) {
+      const origin = gesture.origins.get(node.id);
+      const rect: SnapRect = {
+        id: node.id,
+        x: origin?.x ?? node.x,
+        y: origin?.y ?? node.y,
+        width: node.width,
+        height: node.height,
+      };
+      if (ids.has(node.id)) {
+        moving.push(rect);
+      } else {
+        others.push({ id: node.id, x: node.x, y: node.y, width: node.width, height: node.height });
+      }
+    }
+    return { moving, others };
+  };
+
+  const paintMove = (gesture: Pending, point: Point): void => {
+    const worldNow = screenToWorld(point, cameraNow(), view.getSize());
+    const rawDx = worldNow.x - gesture.startWorld.x;
+    const rawDy = worldNow.y - gesture.startWorld.y;
+    const resolved = resolveMoveDelta({
+      dx: rawDx,
+      dy: rawDy,
+      shift: gesture.shift,
+      ...movingRects(gesture),
+      zoom: cameraNow().zoom,
+    });
+    applyLiveNodeTransforms(view.host, gesture.origins, resolved.dx, resolved.dy);
+    view.applyGuides(guideScreen(resolved.guides));
+    paint({
+      camera: liveCamera,
+      straight: true,
+      liveDelta: { ids: new Set(gesture.moveIds), dx: resolved.dx, dy: resolved.dy },
+    });
   };
 
   const flushMove = (): void => {
@@ -503,15 +879,7 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
       return;
     }
     if (active.kind === "move") {
-      const worldNow = screenToWorld(point, cameraNow(), view.getSize());
-      const liveDx = worldNow.x - active.startWorld.x;
-      const liveDy = worldNow.y - active.startWorld.y;
-      applyLiveNodeTransforms(view.host, active.origins, liveDx, liveDy);
-      paint({
-        camera: liveCamera,
-        straight: true,
-        liveDelta: { ids: new Set(active.moveIds), dx: liveDx, dy: liveDy },
-      });
+      paintMove(active, point);
       return;
     }
     if (active.kind === "marquee") {
@@ -536,6 +904,11 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
     }
     if (active.kind === "extract") {
       moveExtractGhost(ghostEl, point, el.getBoundingClientRect());
+      paint({ camera: liveCamera, straight: true });
+      return;
+    }
+    if (active.kind === "reorder-slot" && active.reorderFrom !== null) {
+      previewSlotYield(el, store, active.reorderFrom, buildHit(point, false));
     }
   };
 
@@ -576,6 +949,21 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
       } else if (active.moveIds.length > 0) {
         active.kind = "move";
         store.setGestureActive(true, "move");
+        if (active.alt) {
+          const copied = store.stageAltDuplicate();
+          if (copied.length > 0) {
+            active.moveIds = copied;
+            active.origins = new Map();
+            for (const id of copied) {
+              const node = store.nodeMap()[id];
+              if (node !== undefined) {
+                active.origins.set(id, { x: node.x, y: node.y });
+              }
+            }
+            active.altCopied = true;
+            view.classSelect(new Set(copied));
+          }
+        }
       } else if (active.connectFrom !== null) {
         active.kind = "connect";
         store.setGestureActive(true, "connect");
@@ -586,10 +974,41 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
         return;
       }
     }
+    active.shift = event.shiftKey;
     pendingPoint = screen;
     if (raf === 0) {
       raf = window.requestAnimationFrame(flushMove);
     }
+    if (active.kind === "move" || active.kind === "connect" || active.kind === "extract") {
+      scheduleAutoPan();
+    }
+  };
+
+  const scheduleAutoPan = (): void => {
+    if (panRaf !== 0) {
+      return;
+    }
+    panRaf = window.requestAnimationFrame(tickAutoPan);
+  };
+
+  const tickAutoPan = (): void => {
+    panRaf = 0;
+    if (active === null) {
+      return;
+    }
+    if (active.kind !== "move" && active.kind !== "connect" && active.kind !== "extract") {
+      return;
+    }
+    const pan = autoPanScreenDelta(active.lastScreen, view.getSize());
+    if (pan.x === 0 && pan.y === 0) {
+      return;
+    }
+    liveCamera = panByScreenDelta(liveCamera, pan.x, pan.y);
+    if (pendingPoint === null) {
+      pendingPoint = active.lastScreen;
+      flushMove();
+    }
+    scheduleAutoPan();
   };
 
   const endGesture = (event: PointerEvent): void => {
@@ -603,12 +1022,32 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
       window.cancelAnimationFrame(raf);
       raf = 0;
     }
+    if (panRaf !== 0) {
+      window.cancelAnimationFrame(panRaf);
+      panRaf = 0;
+    }
     el.classList.remove("is-panning");
     if (!spaceDown) {
       el.classList.remove("is-pan");
     }
     const rect = el.getBoundingClientRect();
     const screen = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    const cancelled = event.type === "pointercancel";
+
+    if (cancelled) {
+      applyLiveNodeTransforms(view.host, current.origins, 0, 0);
+      view.applyGuides(null);
+      view.applyMarquee(null);
+      if (current.altCopied) {
+        store.discardAltStage();
+      }
+      hideExtractGhost(ghostEl);
+      ghostEl = null;
+      liveCamera = store.getSnapshot().camera;
+      paint({ camera: liveCamera, straight: false, liveDelta: null, connectLine: null });
+      store.setGestureActive(false);
+      return;
+    }
 
     if (current.kind === "pan") {
       store.setGestureActive(false);
@@ -619,13 +1058,23 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
 
     if (current.kind === "move") {
       const worldNow = screenToWorld(screen, cameraNow(), view.getSize());
-      const dx = worldNow.x - current.startWorld.x;
-      const dy = worldNow.y - current.startWorld.y;
+      const resolved = resolveMoveDelta({
+        dx: worldNow.x - current.startWorld.x,
+        dy: worldNow.y - current.startWorld.y,
+        shift: current.shift,
+        ...movingRects(current),
+        zoom: cameraNow().zoom,
+      });
+      applyLiveNodeTransforms(view.host, current.origins, 0, 0);
+      view.applyGuides(null);
       paint({ camera: liveCamera, straight: false, liveDelta: null });
       store.setGestureActive(false);
-      if (dx !== 0 || dy !== 0) {
-        store.moveNodes(current.moveIds, dx, dy);
+      if (current.altCopied) {
+        store.commitAltMove(resolved.dx, resolved.dy);
+      } else if (resolved.dx !== 0 || resolved.dy !== 0) {
+        store.moveNodes(current.moveIds, resolved.dx, resolved.dy, false);
       }
+      commitCameraIfChanged();
       return;
     }
 
@@ -656,6 +1105,27 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
     if (current.kind === "connect" && current.connectFrom !== null) {
       const hit = buildHit(screen, true);
       store.setGestureActive(false);
+      commitCameraIfChanged();
+      if (current.chipFrom !== null) {
+        const chip = current.chipFrom;
+        const decision = decideChipDrop({
+          fromNodeId: chip.nodeId,
+          fromSlotId: chip.slotId,
+          hitKind: hit.kind,
+          hitNodeId: "nodeId" in hit ? hit.nodeId : null,
+          hitSlotId: hit.kind === "slot" ? hit.slotId : null,
+        });
+        paint({ camera: liveCamera, straight: false, connectLine: null });
+        if (decision === "disconnect") {
+          store.disconnectSlot(chip.nodeId, chip.slotId);
+        } else if (decision === "move" && hit.kind === "slot") {
+          const moved = store.relocateSlotEdge(chip.nodeId, chip.slotId, hit.nodeId, hit.slotId);
+          if (!moved.ok) {
+            store.setLastConnectMessage(moved.message);
+          }
+        }
+        return;
+      }
       const fromNode = store.nodeMap()[current.connectFrom.nodeId];
       const fromPoint =
         fromNode === undefined
@@ -704,13 +1174,12 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
       hideExtractGhost(ghostEl);
       ghostEl = null;
       store.setGestureActive(false);
+      commitCameraIfChanged();
       paint({ camera: liveCamera, straight: false });
       const extract = current.extractFrom;
-      const dropTarget = event.target instanceof Element ? event.target : null;
-      const sourceStrip = dropTarget?.closest("[data-variant-strip], .variant-strip");
-      const sourceNode = sourceStrip?.closest("[data-node-id]");
-      const dropOnSourceStrip = sourceNode?.getAttribute("data-node-id") === extract.nodeId;
-      const hit = dropOnSourceStrip ? ({ kind: "empty" } as const) : buildHit(screen, false);
+      const under = elementUnderPointer(event.clientX, event.clientY);
+      const dropOnSourceStrip = readVariantStripNodeId(under) === extract.nodeId;
+      const hit = buildHit(screen, false);
       const world = screenToWorld(screen, cameraNow(), view.getSize());
       const commit = decideExtractCommit({
         dropOnSourceStrip,
@@ -718,37 +1187,61 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
         hitNodeId: hit.kind === "slot" ? hit.nodeId : null,
         hitSlotId: hit.kind === "slot" ? hit.slotId : null,
       });
-      if (commit.action === "slot") {
-        store.extractVariantToSlot(
+      if (commit.action === "slot" && commit.targetNodeId !== extract.nodeId) {
+        const created = store.extractVariantToSlot(
           extract.nodeId,
           extract.variantId,
           commit.targetNodeId,
           commit.targetSlotId,
           world,
         );
+        if (created !== null) {
+          store.setLastConnectMessage(null);
+        }
         return;
       }
       if (commit.action === "blank") {
-        store.extractVariantToBlank(extract.nodeId, extract.variantId, world);
+        const created = store.extractVariantToBlank(extract.nodeId, extract.variantId, world);
+        if (created !== null) {
+          store.setLastConnectMessage(null);
+        }
+        return;
+      }
+      const missed = extractDropFeedback({
+        commit: { action: "none" },
+        dropOnSourceStrip: dropOnSourceStrip || commit.action === "slot",
+        hitKind: commit.action === "slot" ? "near-node" : hit.kind,
+      });
+      if (missed !== null) {
+        store.setLastConnectMessage(missed);
       }
       return;
     }
 
     if (current.kind === "reorder-slot" && current.reorderFrom !== null) {
+      clearSlotYield(el, current.reorderFrom.nodeId);
+      const under = elementUnderPointer(event.clientX, event.clientY);
+      const handle = readSlotHandleTarget(under);
+      const hit = buildHit(screen, false);
+      const node = store.nodeMap()[current.reorderFrom.nodeId];
+      const fromSlot = node?.slots?.find((item) => item.id === current.reorderFrom?.slotId);
+      const toSlot =
+        handle === null ? undefined : node?.slots?.find((item) => item.id === handle.slotId);
+      const reorder = decideReorderCommit({
+        fromNodeId: current.reorderFrom.nodeId,
+        fromSlotId: current.reorderFrom.slotId,
+        handleNodeId: handle?.nodeId ?? null,
+        handleSlotId: handle?.slotId ?? null,
+        hitKind: hit.kind,
+        hitNodeId: hit.kind === "slot" ? hit.nodeId : null,
+        hitSlotId: hit.kind === "slot" ? hit.slotId : null,
+        fromRole: fromSlot?.role,
+        toRole: toSlot?.role,
+      });
       store.setGestureActive(false);
       paint({ camera: liveCamera, straight: false });
-      const drop = event.target instanceof Element ? event.target : null;
-      const handle = drop?.closest("[data-slot-handle]");
-      const nodeEl = handle?.closest("[data-node-id]");
-      const toSlot = handle?.getAttribute("data-slot-handle") ?? handle?.getAttribute("data-slot-id");
-      const toNode = nodeEl?.getAttribute("data-node-id");
-      if (
-        toSlot !== null &&
-        toSlot !== undefined &&
-        toNode === current.reorderFrom.nodeId &&
-        toSlot !== current.reorderFrom.slotId
-      ) {
-        store.reorderSlots(current.reorderFrom.nodeId, current.reorderFrom.slotId, toSlot);
+      if (reorder && handle !== null) {
+        store.reorderSlots(current.reorderFrom.nodeId, current.reorderFrom.slotId, handle.slotId);
       }
       return;
     }
@@ -757,6 +1250,20 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
       store.setGestureActive(false);
       if (current.extractFrom !== null && !current.extractFrom.scrolled) {
         store.clickVariant(current.extractFrom.nodeId, current.extractFrom.variantId);
+      } else if (current.hit.kind === "edge") {
+        const edgeId = current.hit.edgeId;
+        if (current.shift) {
+          const snap = store.getSnapshot();
+          const next = new Set(snap.selectedEdgeIds);
+          if (next.has(edgeId)) {
+            next.delete(edgeId);
+          } else {
+            next.add(edgeId);
+          }
+          store.select([...snap.selectedIds], [...next]);
+        } else {
+          store.select([], [edgeId]);
+        }
       } else if (current.hit.kind === "empty") {
         if (!current.shift) {
           store.select([]);
@@ -770,19 +1277,31 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
   };
 
   const onWheel = (event: WheelEvent): void => {
-    event.preventDefault();
-    if (!wheelShouldZoom({
+    const target = event.target instanceof Element ? event.target : null;
+    const inTextField = target !== null && target.closest("textarea, input") !== null;
+    const strip = target?.closest(".variant-strip") ?? null;
+    const stripEl = strip instanceof HTMLElement ? strip : null;
+    const action = wheelAction({
+      inTextField,
+      inVariantStrip: stripEl !== null,
+      stripOverflows: stripEl !== null && stripEl.scrollWidth > stripEl.clientWidth,
       composing: options.isComposing(),
       editable: isEditableTarget(event.target),
       viewerOpen: options.viewerOpen(),
-    })) {
+    });
+    if (action === "yield") {
+      event.stopPropagation();
+      return;
+    }
+    event.preventDefault();
+    if (action === "ignore") {
       return;
     }
     const rect = el.getBoundingClientRect();
     const viewport = view.getSize();
     const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
     const base = liveCamera.zoom === store.getSnapshot().camera.zoom ? store.getSnapshot().camera : liveCamera;
-    liveCamera = applyWheelZoom(base, pointer, viewport, event.deltaY);
+    liveCamera = applyWheelZoom(base, pointer, viewport, event.deltaY, event.deltaMode);
     paint({ camera: liveCamera, straight: true });
     if (wheelTimer !== null) {
       window.clearTimeout(wheelTimer);
@@ -802,6 +1321,17 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
 
   const onContextLost = (): void => {
     spaceDown = false;
+    if (panRaf !== 0) {
+      window.cancelAnimationFrame(panRaf);
+      panRaf = 0;
+    }
+    if (active?.reorderFrom !== null && active?.reorderFrom !== undefined) {
+      clearSlotYield(el, active.reorderFrom.nodeId);
+    }
+    if (active?.altCopied === true) {
+      applyLiveNodeTransforms(view.host, active.origins, 0, 0);
+      store.discardAltStage();
+    }
     active = null;
     hideExtractGhost(ghostEl);
     ghostEl = null;
@@ -811,7 +1341,9 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
     }
     el.classList.remove("is-pan", "is-panning");
     view.applyMarquee(null);
-    paint({ camera: store.getSnapshot().camera, straight: false, liveDelta: null, connectLine: null });
+    view.applyGuides(null);
+    liveCamera = store.getSnapshot().camera;
+    paint({ camera: liveCamera, straight: false, liveDelta: null, connectLine: null });
     store.setGestureActive(false);
   };
 
@@ -837,11 +1369,20 @@ export function attachCanvasGestures(options: GestureSessionOptions): GestureSes
   };
 
   const detach = (): void => {
+    if (active?.reorderFrom !== null && active?.reorderFrom !== undefined) {
+      clearSlotYield(el, active.reorderFrom.nodeId);
+    }
+    if (active?.altCopied === true) {
+      store.discardAltStage();
+    }
     if (wheelTimer !== null) {
       window.clearTimeout(wheelTimer);
     }
     if (bounceTimer !== null) {
       window.cancelAnimationFrame(bounceTimer);
+    }
+    if (panRaf !== 0) {
+      window.cancelAnimationFrame(panRaf);
     }
     hideExtractGhost(ghostEl);
     if (raf !== 0) {
@@ -958,6 +1499,99 @@ function moveExtractGhost(
 
 function hideExtractGhost(ghost: HTMLElement | null): void {
   ghost?.remove();
+}
+
+function elementUnderPointer(clientX: number, clientY: number): Element | null {
+  if (typeof document === "undefined" || typeof document.elementFromPoint !== "function") {
+    return null;
+  }
+  return document.elementFromPoint(clientX, clientY);
+}
+
+function slotShiftMs(): number {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return REORDER_SHIFT_MS;
+  }
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : REORDER_SHIFT_MS;
+}
+
+function previewSlotYield(
+  host: HTMLElement,
+  store: EditorStore,
+  from: { nodeId: string; slotId: string },
+  hit: Hit,
+): void {
+  const node = store.nodeMap()[from.nodeId];
+  const fromSlot = node?.slots?.find((item) => item.id === from.slotId);
+  const toSlot =
+    hit.kind === "slot" && hit.nodeId === from.nodeId
+      ? node?.slots?.find((item) => item.id === hit.slotId)
+      : undefined;
+  const sameRole =
+    fromSlot !== undefined &&
+    toSlot !== undefined &&
+    fromSlot.id !== toSlot.id &&
+    fromSlot.role === toSlot.role;
+  paintSlotYield(host, from.nodeId, {
+    fromSlotId: from.slotId,
+    toSlotId: sameRole ? toSlot.id : null,
+    fromOrder: fromSlot?.order ?? null,
+    toOrder: sameRole ? toSlot.order : null,
+  });
+}
+
+function paintSlotYield(
+  host: HTMLElement,
+  nodeId: string,
+  shift: {
+    fromSlotId: string;
+    toSlotId: string | null;
+    fromOrder: number | null;
+    toOrder: number | null;
+  },
+): void {
+  const nodeEl = host.querySelector(`[data-node-id="${cssEscape(nodeId)}"]`);
+  if (!(nodeEl instanceof Element)) {
+    return;
+  }
+  const ms = slotShiftMs();
+  const swapping =
+    shift.toSlotId !== null &&
+    shift.fromOrder !== null &&
+    shift.toOrder !== null &&
+    shift.fromOrder !== shift.toOrder;
+  for (const row of nodeEl.querySelectorAll(".node-slot")) {
+    if (!(row instanceof HTMLElement)) {
+      continue;
+    }
+    const id = row.getAttribute("data-slot-id");
+    row.style.transition = `transform ${ms}ms ease`;
+    let dy = 0;
+    if (swapping && shift.fromOrder !== null && shift.toOrder !== null) {
+      if (id === shift.fromSlotId) {
+        dy = (shift.toOrder - shift.fromOrder) * SLOT_ROW;
+      } else if (id === shift.toSlotId) {
+        dy = (shift.fromOrder - shift.toOrder) * SLOT_ROW;
+      }
+    }
+    row.style.transform = dy === 0 ? "" : `translate3d(0, ${dy}px, 0)`;
+    row.style.zIndex = dy !== 0 && id === shift.fromSlotId ? "2" : "";
+  }
+}
+
+function clearSlotYield(host: HTMLElement, nodeId: string): void {
+  const nodeEl = host.querySelector(`[data-node-id="${cssEscape(nodeId)}"]`);
+  if (!(nodeEl instanceof Element)) {
+    return;
+  }
+  for (const row of nodeEl.querySelectorAll(".node-slot")) {
+    if (!(row instanceof HTMLElement)) {
+      continue;
+    }
+    row.style.transform = "";
+    row.style.transition = "";
+    row.style.zIndex = "";
+  }
 }
 
 function applyLiveNodeTransforms(

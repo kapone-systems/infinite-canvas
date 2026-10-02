@@ -7,8 +7,11 @@ import { fileURLToPath } from "node:url";
 import { createEmptyProject } from "@canvas/schema";
 import { EditorStore } from "./EditorStore.ts";
 import {
+  adjacentSameRoleSlotId,
   applyFocusedTextHistoryKey,
   historyKeyAction,
+  planSystemPaste,
+  slotKeyPlan,
 } from "./shortcuts.ts";
 
 const dir = dirname(fileURLToPath(import.meta.url));
@@ -144,3 +147,54 @@ test("TextNode 聚焦路径接到 applyFocusedTextHistoryKey；App 接到 store.
   assert.equal(app.includes("store.undo()"), true);
   assert.equal(app.includes("store.redo()"), true);
 });
+
+test("系统粘贴：输入框让出；文件优先；已复制节点时不把旧文字当成新文本", () => {
+  assert.equal(planSystemPaste({ inField: true, fileCount: 2, text: "a", hasSessionClipboard: true }), "yield");
+  assert.equal(planSystemPaste({ inField: false, fileCount: 2, text: "a", hasSessionClipboard: true }), "files");
+  assert.equal(planSystemPaste({ inField: false, fileCount: 0, text: "你好", hasSessionClipboard: true }), "session");
+  assert.equal(planSystemPaste({ inField: false, fileCount: 0, text: "x".repeat(100001), hasSessionClipboard: true }), "session");
+  assert.equal(planSystemPaste({ inField: false, fileCount: 0, text: "你好", hasSessionClipboard: false }), "text");
+  assert.equal(planSystemPaste({ inField: false, fileCount: 0, text: "x".repeat(100001), hasSessionClipboard: false }), "too-long");
+  assert.equal(planSystemPaste({ inField: false, fileCount: 0, text: "", hasSessionClipboard: false }), "session");
+  const shortcuts = readFileSync(join(dir, "shortcuts.ts"), "utf8");
+  assert.equal(shortcuts.includes("pasteClipboard"), false);
+  assert.equal(shortcuts.includes("navigator.clipboard"), false);
+  const app = readFileSync(join(dir, "../App.tsx"), "utf8");
+  assert.equal(app.includes("planSystemPaste"), true);
+  assert.equal(app.includes("addImportedBatch"), true);
+  assert.equal(app.includes("addTextAt"), true);
+  assert.equal(app.includes("showDirectoryPicker"), false);
+  const pasteAt = app.indexOf("const pasteWorld");
+  const paste = app.slice(pasteAt, pasteAt + 3500);
+  assert.equal(paste.includes("const onPaste"), true);
+  assert.equal(paste.includes("image/svg+xml"), true);
+  assert.equal(paste.includes("COPY_OFFSET"), true);
+  assert.equal(paste.includes("getSnapshot().camera"), true);
+});
+
+test("槽键盘：Alt 上下重排，Delete 只断开，空槽 Backspace 才删槽", () => {
+  assert.equal(slotKeyPlan({ key: "ArrowUp", altKey: true, slotFocused: true, slotEmpty: false }), "reorder-up");
+  assert.equal(slotKeyPlan({ key: "ArrowDown", altKey: true, slotFocused: true, slotEmpty: true }), "reorder-down");
+  assert.equal(slotKeyPlan({ key: "Delete", altKey: false, slotFocused: true, slotEmpty: false }), "disconnect");
+  assert.equal(slotKeyPlan({ key: "Backspace", altKey: false, slotFocused: true, slotEmpty: true }), "remove");
+  assert.equal(slotKeyPlan({ key: "Backspace", altKey: false, slotFocused: true, slotEmpty: false }), null);
+  assert.equal(slotKeyPlan({ key: "Delete", altKey: false, slotFocused: false, slotEmpty: false }), "delete-selection");
+  assert.equal(slotKeyPlan({ key: "Backspace", altKey: false, slotFocused: false, slotEmpty: false }), "delete-selection");
+  const slots = [
+    { id: "p", role: "prompt", order: 0 },
+    { id: "a", role: "reference_image", order: 1 },
+    { id: "b", role: "reference_image", order: 2 },
+  ];
+  assert.equal(adjacentSameRoleSlotId(slots, "b", "up"), "a");
+  assert.equal(adjacentSameRoleSlotId(slots, "a", "down"), "b");
+  assert.equal(adjacentSameRoleSlotId(slots, "a", "up"), null);
+  assert.equal(adjacentSameRoleSlotId(slots, "p", "down"), null);
+  const shortcuts = readFileSync(join(dir, "shortcuts.ts"), "utf8");
+  const keyAt = shortcuts.indexOf("const onKeyDown");
+  const key = shortcuts.slice(keyAt, keyAt + 3500);
+  const planAt = key.indexOf("slotKeyPlan");
+  const deleteAt = key.indexOf("deleteSelection");
+  assert.ok(planAt >= 0 && deleteAt > planAt);
+});
+
+
